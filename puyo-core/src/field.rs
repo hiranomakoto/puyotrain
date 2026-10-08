@@ -237,7 +237,7 @@ impl Field {
             let mut color_used = false;
             let mut rem = p;
             while rem != 0 {
-                let mut g = rem & rem.wrapping_neg();
+                let mut g = 1u128 << rem.trailing_zeros();
                 loop {
                     let n = expand(g) & p;
                     if n == g {
