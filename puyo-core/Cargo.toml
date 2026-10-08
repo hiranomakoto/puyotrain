@@ -1,0 +1,15 @@
+[package]
+name = "puyo-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Puyo Puyo Tsu rule simulator"
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1"
+
+[[bench]]
+name = "throughput"
+harness = false

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "puyotrain"
+version = "0.1.0"
+description = "Puyo Puyo Tsu simulator with Gymnasium environments"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "gymnasium>=0.29"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+manifest-path = "puyo-py/Cargo.toml"
+python-source = "python"
+module-name = "puyotrain._puyo"
+features = ["extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

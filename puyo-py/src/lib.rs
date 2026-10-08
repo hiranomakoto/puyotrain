@@ -1,0 +1,353 @@
+//! puyo-core の Python バインディング(モジュール名 `puyotrain._puyo`)。
+
+use numpy::{PyArray1, PyArrayMethods};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+
+use puyo_core::field::FULL_MASK;
+use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
+use puyo_core::{Action, ActionMask, Game, Outcome, Pair, PlayerState, Puyo, StepError, Versus};
+
+/// 盤面平面の数: 空 + 4色 + おじゃま。
+const NUM_BOARD_PLANES: usize = NUM_COLORS + 2;
+const BOARD_LEN: usize = NUM_BOARD_PLANES * HEIGHT * WIDTH;
+/// 公開される組ぷよの数(現在・ネクスト・ネクネク)。
+const NUM_VISIBLE_PAIRS: usize = 3;
+
+fn to_py_err(e: StepError) -> PyErr {
+    match e {
+        StepError::IllegalAction { .. } => PyValueError::new_err(e.to_string()),
+        StepError::GameOver => PyRuntimeError::new_err(e.to_string()),
+    }
+}
+
+fn action(index: usize) -> PyResult<Action> {
+    Action::new(index)
+        .ok_or_else(|| PyValueError::new_err(format!("action must be in 0..{}", NUM_ACTIONS)))
+}
+
+/// 盤面を (平面, 段, 列) のワンホットで書き込む。平面0 = 空、1..=4 = 色、5 = おじゃま。段0 = 1段目。
+fn write_board(out: &mut [u8], st: &PlayerState) {
+    let plane_len = HEIGHT * WIDTH;
+    let mut put = |plane: usize, bits: u128| {
+        let mut b = bits & FULL_MASK;
+        while b != 0 {
+            let i = b.trailing_zeros() as usize;
+            b &= b - 1;
+            let (col, row) = (i / 16, i % 16);
+            out[plane * plane_len + row * WIDTH + col] = 1;
+        }
+    };
+    put(0, !st.field.occupied());
+    for p in Puyo::COLORS.into_iter().chain([Puyo::Ojama]) {
+        put(1 + p.index(), st.field.plane(p));
+    }
+}
+
+fn mask_vec(mask: ActionMask) -> Vec<i8> {
+    (0..NUM_ACTIONS).map(|i| ((mask >> i) & 1) as i8).collect()
+}
+
+fn pieces_vec(pairs: &[Pair; NUM_VISIBLE_PAIRS]) -> Vec<u8> {
+    let mut v = vec![0u8; NUM_VISIBLE_PAIRS * 2 * NUM_COLORS];
+    for (k, p) in pairs.iter().enumerate() {
+        v[(k * 2) * NUM_COLORS + p.axis.index()] = 1;
+        v[(k * 2 + 1) * NUM_COLORS + p.child.index()] = 1;
+    }
+    v
+}
+
+/// 観測 dict を作る。`opp` が無ければ相手盤面はすべて0。
+fn observation<'py>(
+    py: Python<'py>,
+    me: &PlayerState,
+    opp: Option<&PlayerState>,
+    pairs: &[Pair; NUM_VISIBLE_PAIRS],
+    mask: ActionMask,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut board = vec![0u8; 2 * BOARD_LEN];
+    write_board(&mut board[..BOARD_LEN], me);
+    if let Some(o) = opp {
+        write_board(&mut board[BOARD_LEN..], o);
+    }
+    let ojama = vec![me.pending as i32, opp.map_or(0, |o| o.pending as i32)];
+    let d = PyDict::new(py);
+    d.set_item(
+        "board",
+        PyArray1::from_vec(py, board).reshape([2, NUM_BOARD_PLANES, HEIGHT, WIDTH])?,
+    )?;
+    d.set_item(
+        "pieces",
+        PyArray1::from_vec(py, pieces_vec(pairs)).reshape([NUM_VISIBLE_PAIRS, 2, NUM_COLORS])?,
+    )?;
+    d.set_item("ojama", PyArray1::from_vec(py, ojama))?;
+    d.set_item("action_mask", PyArray1::from_vec(py, mask_vec(mask)))?;
+    Ok(d)
+}
+
+fn pair_tuple(p: Pair) -> (usize, usize) {
+    (p.axis.index(), p.child.index())
+}
+
+/// 1人用ゲーム。
+#[pyclass(name = "Game", module = "puyotrain._puyo", skip_from_py_object)]
+#[derive(Clone)]
+struct PyGame {
+    inner: Game,
+}
+
+#[pymethods]
+impl PyGame {
+    #[new]
+    fn new(seed: u64) -> Self {
+        PyGame {
+            inner: Game::new(seed),
+        }
+    }
+
+    /// 1手進める。戻り値: (得点, 連鎖数, 全消し, 窒息)。
+    fn step(&mut self, action_index: usize) -> PyResult<(u32, u32, bool, bool)> {
+        let r = self.inner.step(action(action_index)?).map_err(to_py_err)?;
+        let p = r.placement;
+        Ok((p.chain.score, p.chain.chains, p.all_clear, r.dead))
+    }
+
+    /// 合法手のビットマスク(int)。
+    fn legal_actions(&self) -> u32 {
+        self.inner.legal_actions()
+    }
+
+    /// 合法手マスク(長さ22の int8 配列)。
+    fn action_mask<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i8>> {
+        PyArray1::from_vec(py, mask_vec(self.inner.legal_actions()))
+    }
+
+    fn observation<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        observation(
+            py,
+            self.inner.player(),
+            None,
+            &self.inner.visible_pairs(),
+            self.inner.legal_actions(),
+        )
+    }
+
+    /// 現在・ネクスト・ネクネクの組ぷよ [(軸, 子), ...]。色番号は 0=赤 1=緑 2=青 3=黄。
+    fn visible_pairs(&self) -> Vec<(usize, usize)> {
+        self.inner
+            .visible_pairs()
+            .into_iter()
+            .map(pair_tuple)
+            .collect()
+    }
+
+    #[getter]
+    fn score(&self) -> u64 {
+        self.inner.score()
+    }
+
+    #[getter]
+    fn turn(&self) -> u64 {
+        self.inner.turn()
+    }
+
+    #[getter]
+    fn is_over(&self) -> bool {
+        self.inner.is_over()
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed()
+    }
+
+    fn field_str(&self) -> String {
+        self.inner.field().to_string()
+    }
+
+    fn clone(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __copy__(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Game(seed={}, turn={}, score={})",
+            self.inner.seed(),
+            self.inner.turn(),
+            self.inner.score()
+        )
+    }
+}
+
+/// 2人対戦(同期ターン制)。
+#[pyclass(name = "Versus", module = "puyotrain._puyo", skip_from_py_object)]
+#[derive(Clone)]
+struct PyVersus {
+    inner: Versus,
+}
+
+#[pymethods]
+impl PyVersus {
+    #[new]
+    fn new(seed: u64) -> Self {
+        PyVersus {
+            inner: Versus::new(seed),
+        }
+    }
+
+    /// 両者の行動で1ターン進める。各プレイヤーの結果を dict のリストで返す。
+    fn step<'py>(
+        &mut self,
+        py: Python<'py>,
+        a0: usize,
+        a1: usize,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let r = self
+            .inner
+            .step(action(a0)?, action(a1)?)
+            .map_err(to_py_err)?;
+        r.players
+            .iter()
+            .map(|t| {
+                let d = PyDict::new(py);
+                d.set_item("score", t.placement.chain.score)?;
+                d.set_item("chains", t.placement.chain.chains)?;
+                d.set_item("all_clear", t.placement.all_clear)?;
+                d.set_item("attack", t.placement.attack)?;
+                d.set_item("ojama_sent", t.ojama_sent)?;
+                d.set_item("ojama_dropped", t.ojama_dropped)?;
+                d.set_item("dead", t.dead)?;
+                Ok(d)
+            })
+            .collect()
+    }
+
+    fn legal_actions(&self, player: usize) -> PyResult<u32> {
+        check_player(player)?;
+        Ok(self.inner.legal_actions(player))
+    }
+
+    fn action_mask<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<i8>>> {
+        check_player(player)?;
+        Ok(PyArray1::from_vec(
+            py,
+            mask_vec(self.inner.legal_actions(player)),
+        ))
+    }
+
+    /// プレイヤー `player` 視点の観測(自分が先)。
+    fn observation<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
+        check_player(player)?;
+        let ps = self.inner.players();
+        observation(
+            py,
+            &ps[player],
+            Some(&ps[1 - player]),
+            &self.inner.visible_pairs(),
+            self.inner.legal_actions(player),
+        )
+    }
+
+    fn visible_pairs(&self) -> Vec<(usize, usize)> {
+        self.inner
+            .visible_pairs()
+            .into_iter()
+            .map(pair_tuple)
+            .collect()
+    }
+
+    /// 予告おじゃま数 [P0, P1]。
+    fn pending_ojama(&self) -> (u32, u32) {
+        (self.inner.player(0).pending, self.inner.player(1).pending)
+    }
+
+    fn scores(&self) -> (u64, u64) {
+        (self.inner.player(0).score, self.inner.player(1).score)
+    }
+
+    #[getter]
+    fn turn(&self) -> u64 {
+        self.inner.turn()
+    }
+
+    #[getter]
+    fn is_over(&self) -> bool {
+        self.inner.is_over()
+    }
+
+    /// 勝者の番号。未決着・引き分けなら None。
+    #[getter]
+    fn winner(&self) -> Option<usize> {
+        match self.inner.outcome() {
+            Some(Outcome::Win(i)) => Some(i),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn is_draw(&self) -> bool {
+        self.inner.outcome() == Some(Outcome::Draw)
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed()
+    }
+
+    fn field_str(&self, player: usize) -> PyResult<String> {
+        check_player(player)?;
+        Ok(self.inner.player(player).field.to_string())
+    }
+
+    fn clone(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __copy__(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Versus(seed={}, turn={})",
+            self.inner.seed(),
+            self.inner.turn()
+        )
+    }
+}
+
+fn check_player(player: usize) -> PyResult<()> {
+    if player < 2 {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err("player must be 0 or 1"))
+    }
+}
+
+#[pymodule]
+fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyGame>()?;
+    m.add_class::<PyVersus>()?;
+    m.add("NUM_ACTIONS", NUM_ACTIONS)?;
+    m.add("WIDTH", WIDTH)?;
+    m.add("HEIGHT", HEIGHT)?;
+    m.add("NUM_COLORS", NUM_COLORS)?;
+    Ok(())
+}
