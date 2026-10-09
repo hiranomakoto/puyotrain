@@ -18,12 +18,26 @@ def load_config(path: str | Path | None = None, overrides: list[str] | None = No
     path = Path(path) if path else DEFAULT_CONFIG
     with open(path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    if path.resolve() != DEFAULT_CONFIG.resolve() and DEFAULT_CONFIG.exists():
+        # 古いランの config.yaml に無い(後から増えた)キーは既定値で補う
+        with open(DEFAULT_CONFIG, encoding="utf-8") as f:
+            cfg = _merge_defaults(yaml.safe_load(f), cfg)
     for ov in overrides or []:
         key, sep, raw = ov.partition("=")
         if not sep:
             raise ValueError(f"override must be key=value: {ov!r}")
         set_by_path(cfg, key.strip(), yaml.safe_load(raw))
     return cfg
+
+
+def _merge_defaults(default: dict, cfg: dict) -> dict:
+    out = copy.deepcopy(cfg)
+    for k, v in default.items():
+        if k not in out:
+            out[k] = copy.deepcopy(v)
+        elif isinstance(v, dict) and isinstance(out[k], dict):
+            out[k] = _merge_defaults(v, out[k])
+    return out
 
 
 def set_by_path(cfg: dict, dotted: str, value: Any) -> None:

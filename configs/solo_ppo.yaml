@@ -40,6 +40,7 @@ eval:
 
 video:
   enabled: true             # チェックポイント保存のたびに動画を作る
+  every_checkpoints: 1      # N にすると N 回に1回だけ作る(学習終了時は必ず作る)
   seeds: [0, 1, 2]
   max_moves: 500
   fps: 30

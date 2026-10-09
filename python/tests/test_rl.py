@@ -211,3 +211,82 @@ def test_tiny_training_run(tmp_path):
         mp4.unlink()
     made = render_all(run)
     assert len(made) == 3  # baseline_random + 2 チェックポイント
+
+
+def _tiny_overrides(total: int) -> list[str]:
+    return [
+        "env.n_envs=2", "env.vec_env=dummy", f"ppo.total_timesteps={total}", "ppo.n_steps=64",
+        "ppo.batch_size=64", "ppo.n_epochs=1", "checkpoint.every_steps=128",
+        "eval.seeds.count=2", "eval.max_steps=20", "eval.baselines=[random]",
+        "video.enabled=false",
+    ]
+
+
+def test_resume_continues_same_run(tmp_path):
+    pytest.importorskip("sb3_contrib")
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    from puyotrain.rl.train import resume, train
+
+    run = train(load_config(overrides=_tiny_overrides(256)), tmp_path / "run")
+    assert sorted(p.stem for p in (run / "checkpoints").glob("*.zip")) == [
+        "step_0000000128", "step_0000000256"]
+    first_256 = (run / "checkpoints" / "step_0000000256.zip").read_bytes()
+
+    # 目標を上げて再開すると、同じランに続きのチェックポイントが増える(古いものはそのまま)
+    resume(run, ["ppo.total_timesteps=512", "ppo.learning_rate=0.0001"])
+    names = sorted(p.stem for p in (run / "checkpoints").glob("*.zip"))
+    assert names == ["step_0000000128", "step_0000000256", "step_0000000384", "step_0000000512"]
+    assert (run / "checkpoints" / "step_0000000256.zip").read_bytes() == first_256
+    meta = json.loads((run / "checkpoints" / "step_0000000512.json").read_text())
+    assert meta["resumed_from"].endswith("step_0000000256.zip")
+    assert meta["config"]["ppo"]["learning_rate"] == 0.0001
+    steps = [json.loads(l)["step"] for l in (run / "metrics.jsonl").read_text().splitlines()]
+    assert steps == [128, 256, 384, 512]
+    assert len((run / "resume_history.jsonl").read_text().splitlines()) == 1
+
+    # TensorBoard は同じディレクトリに続けて書かれる
+    tb_dirs = list((run / "tb").iterdir())
+    assert len(tb_dirs) == 1
+    ea = EventAccumulator(str(tb_dirs[0]))
+    ea.Reload()
+    assert [e.step for e in ea.Scalars("eval/mean_score")] == [128, 256, 384, 512]
+
+    # 目標に到達済みなら再開しない
+    with pytest.raises(ValueError, match="raise it"):
+        resume(run, [])
+    # ネットワークの形は変えられない
+    with pytest.raises(ValueError, match="policy"):
+        resume(run, ["ppo.total_timesteps=1024", "policy.features_dim=64"])
+    # 古いチェックポイントから同じランには続けられない(後のチェックポイントを上書きするため)
+    old = run / "checkpoints" / "step_0000000128.zip"
+    with pytest.raises(ValueError, match="--run-dir"):
+        resume(run, ["ppo.total_timesteps=1024"], from_checkpoint=old)
+    # 分岐先を指定すれば、そこから別のランとして続けられる
+    branch = resume(run, ["ppo.total_timesteps=256"], from_checkpoint=old,
+                    new_run_dir=tmp_path / "branch")
+    assert sorted(p.stem for p in (branch / "checkpoints").glob("*.zip")) == ["step_0000000256"]
+    assert (run / "checkpoints" / "step_0000000512.zip").exists()
+
+
+def test_video_every_checkpoints(tmp_path):
+    pytest.importorskip("sb3_contrib")
+    from puyotrain.rl.train import train
+
+    ov = _tiny_overrides(384)
+    ov.remove("video.enabled=false")
+    ov += ["video.every_checkpoints=2", "video.seeds=[0]", "video.max_moves=5",
+           "video.frames_per_move=1", "video.frames_per_chain_stage=1", "video.end_hold_frames=1"]
+    run = train(load_config(overrides=ov), tmp_path / "run")
+    videos = sorted(p.name for p in (run / "videos").glob("step_*.mp4"))
+    # 128 は飛ばし、256 は2回に1回、384 は学習終了時なので作る
+    assert videos == ["step_0000000256_seed0.mp4", "step_0000000384_seed0.mp4"]
+
+
+def test_old_run_config_gets_new_default_keys(tmp_path):
+    cfg = load_config()
+    del cfg["video"]["every_checkpoints"]
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(cfg))
+    loaded = load_config(p, ["video.every_checkpoints=5"])
+    assert loaded["video"]["every_checkpoints"] == 5

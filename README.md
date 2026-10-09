@@ -246,6 +246,43 @@ TensorBoard に記録する指標:
 | `eval/mean_moves`, `eval/death_rate` | 平均手数・窒息率 |
 | `rollout/ep_score_mean`, `rollout/ep_max_chain_mean` | 学習中のエピソードの得点・最大連鎖 |
 
+### 長時間の学習と再開
+
+```bash
+# 例: 目標 5,000万ステップ、並列 16、チェックポイント 50万ごと、動画は 4 回に 1 回
+python scripts/train.py --set ppo.total_timesteps=50000000 --set env.n_envs=16 \
+    --set checkpoint.every_steps=500000 --set video.every_checkpoints=4
+
+# 止めた(または目標に到達した)ランを、最新のチェックポイントから続ける
+python scripts/train.py --resume runs/<run>
+python scripts/train.py --resume runs/<run> --set ppo.total_timesteps=100000000   # 目標を延ばす
+python scripts/train.py --resume runs/<run> --set ppo.learning_rate=0.0001         # 設定を変えて続ける
+
+# 古いチェックポイントから別の方針で分岐する(元のランはそのまま残る)
+python scripts/train.py --resume runs/<run> --from runs/<run>/checkpoints/step_0010000000.zip \
+    --run-dir runs/<run>-lr1e-4 --set ppo.learning_rate=0.0001
+```
+
+- **Ctrl+C で止めても失われません。** その時点の重みをチェックポイントとして保存してから終了します
+  (評価は行い、動画は省略。後で `render_all.py` で作れます)。
+- `--resume` はランの `config.yaml` を引き継ぎ、`--set` で変えた分だけ上書きします。
+  `ppo.total_timesteps` は「通算でここまで」の目標値です。
+- 再開しても、ステップ番号、TensorBoard の曲線、`metrics.jsonl`、経過時間は続きから記録されます。
+  再開の履歴は `resume_history.jsonl` に残ります。
+- オプティマイザの状態はチェックポイントに含まれるので、そのまま続きから学習します。
+  ロールアウトの途中のデータと、直近エピソードの統計(`rollout/*` の平均の元)は引き継がれません。
+- 変えられないのは `policy`(ネットワークの形)だけです。並列数、学習率、バッチサイズなどは変えられます。
+- 古いチェックポイントから同じランに続けると後のチェックポイントを上書きしてしまうため、
+  その場合は `--run-dir` で分岐先を指定する必要があります。
+
+**ディスク使用量の目安**: チェックポイント1つ約 17 MB(重み + オプティマイザの状態)、
+500手の動画1本 約 2.4 MB。チェックポイントは消さない仕様なので、
+5,000万ステップを 50万ごとに保存すると約 1.7 GB、動画を毎回3本作るとさらに最大約 0.7 GB です。
+間隔は `checkpoint.every_steps` と `video.every_checkpoints` で調整してください。
+
+**並列数の目安**: `env.n_envs` は CPU の論理コア数程度から始め、`bench_train.py` で
+`--set env.n_envs=...` を変えながら一番速い値を選ぶのがおすすめです。
+
 ### 出力(チェックポイント・指標・動画)
 
 ```
@@ -261,6 +298,7 @@ runs/<run_name>-<日時>/
   videos/step_0000050000_seed0.mp4  動画(video.seeds の3本。保存のたびに自動生成)
   videos/baseline_greedy_seed0.mp4  ベースラインの同じシードの動画(学習開始時)
   tb/                               TensorBoard
+  resume_history.jsonl              再開の履歴(再開したときだけ)
 ```
 
 ### 短い学習の実行例
