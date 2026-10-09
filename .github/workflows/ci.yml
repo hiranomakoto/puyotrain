@@ -33,3 +33,36 @@ jobs:
           pip install maturin pytest
           maturin develop --release
           pytest -q
+
+  windows-training-smoke:
+    # setup_windows.ps1 と start_training.ps1 を実際の Windows で動かす(GPU なしなので CPU 版 torch)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: setup_windows.ps1
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1 -SkipBench
+      - name: start_training.ps1 (new run)
+        shell: powershell
+        run: >
+          powershell -ExecutionPolicy Bypass -File scripts\start_training.ps1
+          -RunName ci -TotalSteps 2048 -NEnvs 4 -CheckpointEvery 1024 -VideoEvery 1
+          -Set "eval.seeds.count=3","eval.max_steps=30","video.seeds=[0]","video.max_moves=20","ppo.n_steps=128","ppo.batch_size=128"
+      - name: start_training.ps1 (resume, subproc envs)
+        shell: powershell
+        run: >
+          powershell -ExecutionPolicy Bypass -File scripts\start_training.ps1
+          -RunName ci -TotalSteps 4096 -NEnvs 4 -VecEnv subproc -CheckpointEvery 1024 -VideoEvery 1
+          -Set "eval.seeds.count=3","eval.max_steps=30","video.seeds=[0]","video.max_moves=20","ppo.n_steps=128","ppo.batch_size=128"
+      - name: Check outputs
+        shell: powershell
+        run: |
+          Get-ChildItem runs\ci\checkpoints, runs\ci\videos | Format-Table Name, Length
+          $zips = @(Get-ChildItem runs\ci\checkpoints\step_*.zip)
+          if ($zips.Count -lt 4) { throw "expected >= 4 checkpoints, got $($zips.Count)" }
+          if (-not (Test-Path runs\ci\resume_history.jsonl)) { throw "resume was not recorded" }
+          if (@(Get-ChildItem runs\ci\videos\step_*.mp4).Count -lt 1) { throw "no videos" }

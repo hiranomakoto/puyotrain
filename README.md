@@ -233,7 +233,10 @@ tensorboard --logdir runs
 - アルゴリズムは sb3-contrib の `MaskablePPO`。行動マスクは環境の `action_masks()` から取ります。
 - 方策ネット(`python/puyotrain/rl/features.py`): 自分の盤面(6平面 × 13 × 6)を 3×3 畳み込み2層に通し、
   ネクスト・ネクネクと予告おじゃまを結合して全結合層へ。相手盤面は使わないので、同じ重みで対戦もできます。
-- 環境は `SubprocVecEnv` で並列化(`env.n_envs`、`env.vec_env: dummy` で単一プロセス)。報酬は 得点 / 1000。
+- 環境は `env.n_envs` 個を並列に進めます(既定は1プロセス内でまとめて進める `DummyVecEnv`)。
+  環境の1手は Rust で非常に速いため、プロセスを分ける `SubprocVecEnv`(`env.vec_env: subproc`)より
+  プロセス間通信の分だけ遅くなりにくく、計測では 8並列で 1,581 対 1,128 ステップ/秒でした。
+  報酬は 得点 / 1000。
 - 設定はすべて `configs/solo_ppo.yaml` にあり、`--set キー=値` で上書きできます。
 
 TensorBoard に記録する指標:
@@ -245,6 +248,28 @@ TensorBoard に記録する指標:
 | `baseline/*` | ベースラインの値(比較用の水平線) |
 | `eval/mean_moves`, `eval/death_rate` | 平均手数・窒息率 |
 | `rollout/ep_score_mean`, `rollout/ep_max_chain_mean` | 学習中のエピソードの得点・最大連鎖 |
+
+### Windows で学習を始める(まとめ)
+
+前提: Git、Rust(rustup)、Visual Studio Build Tools(C++)、Python 3.12。無いものは
+セットアップスクリプトが `winget` のインストールコマンドを表示します。
+
+```powershell
+cd C:\Users\<ユーザー名>\dev
+git clone https://github.com/hiranomakoto/puyotrain.git
+cd puyotrain
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1     # 環境構築・テスト・速度計測
+powershell -ExecutionPolicy Bypass -File scripts\start_training.ps1    # 学習開始(2回目以降は自動で再開)
+.venv\Scripts\tensorboard.exe --logdir runs                            # 別のターミナルで進捗を見る
+```
+
+- `setup_windows.ps1` は、NVIDIA GPU があれば PyTorch の CUDA 版を入れ、GPU が使えることを確認します
+  (使えなければ CPU 版に切り替えて警告)。最後に CPU / GPU と並列数 8 / 16 の学習速度を表示します。
+  何度実行しても大丈夫です(既存の `.venv` を再利用)。
+- `start_training.ps1` は `runs\solo_main` に学習します。止めた後に同じコマンドを実行すると最新の
+  チェックポイントから再開します。主なオプション: `-Device cuda`、`-NEnvs 16`、`-TotalSteps 100000000`、
+  `-RunName 名前`、`-Set "ppo.learning_rate=0.0001"`。
+- PowerShell の実行ポリシーでスクリプトが止められないよう、`-ExecutionPolicy Bypass` を付けて実行します。
 
 ### 長時間の学習と再開
 
