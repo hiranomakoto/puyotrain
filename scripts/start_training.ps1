@@ -40,6 +40,11 @@ if (-not (Test-Path $py)) {
     exit 1
 }
 
+# "powershell -File" passes -Set "a=1","b=2" as ONE string "a=1,b=2"; split it again on commas
+# that start a new key=value (commas inside values such as video.seeds=[0,1,2] are kept).
+$Set = @($Set | ForEach-Object { $_ -split ',(?=\s*[A-Za-z_][A-Za-z0-9_.]*=)' } |
+         ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
 $run = Join-Path "runs" $RunName
 $overrides = @(
     "ppo.total_timesteps=$TotalSteps",
