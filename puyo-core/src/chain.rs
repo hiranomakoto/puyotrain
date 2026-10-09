@@ -5,6 +5,7 @@
 
 use crate::field::{ClearResult, Field};
 use crate::rules::{self, SCORE_PER_PUYO};
+use crate::trace::{FrameKind, NoTrace, Tracer};
 
 /// 1連鎖分の結果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,13 +65,41 @@ pub struct ChainSummary {
 }
 
 /// 連鎖を最後まで解決する。
+#[inline]
 pub fn resolve_chain(field: &mut Field) -> ChainSummary {
+    resolve_chain_with(field, 0, &mut NoTrace)
+}
+
+/// 連鎖を最後まで解決し、中間盤面を `tracer` に渡す。
+/// `base_score` はフレームに記録する累計得点の起点。
+pub fn resolve_chain_with<T: Tracer>(
+    field: &mut Field,
+    base_score: u64,
+    tracer: &mut T,
+) -> ChainSummary {
     let mut s = ChainSummary::default();
-    for step in ChainResolver::new(field) {
-        s.chains = step.chain;
-        s.score += step.score;
-        s.cleared += step.clear.num_colored;
-        s.ojama_cleared += step.clear.num_ojama;
+    loop {
+        let before = *field;
+        let Some((clear, mask)) = field.clear_groups_masked() else {
+            break;
+        };
+        let chain = s.chains + 1;
+        let score = step_score(chain, &clear);
+        let total = base_score + (s.score + score) as u64;
+        tracer.frame(
+            FrameKind::BeforeClear,
+            &before,
+            chain,
+            mask,
+            base_score + s.score as u64,
+        );
+        tracer.frame(FrameKind::AfterClear, field, chain, 0, total);
+        field.apply_gravity();
+        tracer.frame(FrameKind::AfterGravity, field, chain, 0, total);
+        s.chains = chain;
+        s.score += score;
+        s.cleared += clear.num_colored;
+        s.ojama_cleared += clear.num_ojama;
     }
     s
 }

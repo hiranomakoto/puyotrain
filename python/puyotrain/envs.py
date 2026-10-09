@@ -14,40 +14,63 @@ _SEED_HIGH = 2**63
 
 
 class PuyoSoloEnv(gym.Env):
-    """1人用。報酬はその手で得た得点。窒息で terminated。
+    """1人用。報酬はその手で得た得点 × reward_scale。窒息で terminated。
 
     Args:
         max_steps: この手数で truncated にする。None なら無制限。
+        reward_scale: 報酬に掛ける係数(学習では 0.001 など)。
         render_mode: None または "ansi"。
+
+    ``reset(options={"game_seed": s})`` でゲームのシードを直接指定できる
+    (固定シード評価用)。info には ``max_chain``(このエピソードの最大連鎖数)が入る。
     """
 
     metadata = {"render_modes": ["ansi"]}
 
-    def __init__(self, max_steps: Optional[int] = None, render_mode: Optional[str] = None):
+    def __init__(
+        self,
+        max_steps: Optional[int] = None,
+        reward_scale: float = 1.0,
+        render_mode: Optional[str] = None,
+    ):
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(f"unsupported render_mode: {render_mode}")
         self.render_mode = render_mode
         self.max_steps = max_steps
+        self.reward_scale = reward_scale
         self.observation_space = observation_space()
         self.action_space = action_space()
         self.game: Optional[Game] = None
+        self.max_chain = 0
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
-        game_seed = int(self.np_random.integers(0, _SEED_HIGH))
+        if options and options.get("game_seed") is not None:
+            game_seed = int(options["game_seed"])
+        else:
+            game_seed = int(self.np_random.integers(0, _SEED_HIGH))
         self.game = Game(game_seed)
+        self.max_chain = 0
         return self.game.observation(), {"game_seed": game_seed}
 
     def step(self, action):
         if self.game is None:
             raise RuntimeError("call reset() before step()")
         score, chains, all_clear, dead = self.game.step(int(action))
+        self.max_chain = max(self.max_chain, chains)
         terminated = dead
         truncated = (
             not terminated and self.max_steps is not None and self.game.turn >= self.max_steps
         )
-        info = {"chains": chains, "all_clear": all_clear, "total_score": self.game.score}
-        return self.game.observation(), float(score), terminated, truncated, info
+        info = {
+            "score": score,
+            "chains": chains,
+            "all_clear": all_clear,
+            "total_score": self.game.score,
+            "max_chain": self.max_chain,
+        }
+        reward = float(score) * self.reward_scale
+        return self.game.observation(), reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
         """合法手マスク(sb3-contrib の MaskablePPO 互換)。"""

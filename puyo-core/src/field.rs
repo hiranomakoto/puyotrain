@@ -216,6 +216,16 @@ impl Field {
         moved
     }
 
+    /// 連結判定領域(12段)内で、上下左右に隣り合う同色ペアの数。
+    pub fn same_color_adjacency(&self) -> u32 {
+        let mut n = 0;
+        for p in &self.planes[..NUM_COLORS] {
+            let v = p & VISIBLE_MASK;
+            n += (v & (v >> 1)).count_ones() + (v & (v >> COL_BITS)).count_ones();
+        }
+        n
+    }
+
     /// 浮いたぷよがあるか(テスト用)。
     pub fn has_floating(&self) -> bool {
         (0..WIDTH).any(|c| {
@@ -226,7 +236,13 @@ impl Field {
 
     /// 4個以上つながった色ぷよと、それに隣接するおじゃまを消す。
     /// 落下は行わない。何も消えなければ `None`。
+    #[inline]
     pub fn clear_groups(&mut self) -> Option<ClearResult> {
+        self.clear_groups_masked().map(|(r, _)| r)
+    }
+
+    /// `clear_groups` と同じだが、消えたセルのマスク(色ぷよ + おじゃま)も返す。
+    pub fn clear_groups_masked(&mut self) -> Option<(ClearResult, u128)> {
         let mut cleared: u128 = 0;
         let mut res = ClearResult::default();
         for c in 0..NUM_COLORS {
@@ -268,7 +284,7 @@ impl Field {
             *p &= !cleared;
         }
         self.planes[ojama_idx] &= !ojama;
-        Some(res)
+        Some((res, cleared | ojama))
     }
 
     /// 列ごとの個数だけおじゃまを積む。13段を超える分は消滅する。

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod action;
+pub mod bot;
 pub mod chain;
 pub mod color;
 pub mod field;
@@ -16,6 +17,7 @@ pub mod game;
 pub mod phase;
 pub mod rules;
 pub mod score;
+pub mod trace;
 pub mod tsumo;
 pub mod versus;
 
@@ -25,5 +27,6 @@ pub use color::{Pair, Puyo};
 pub use field::{ClearResult, Field};
 pub use game::{Game, GameStep, StepError};
 pub use phase::{Placement, PlayerState};
+pub use trace::{FrameKind, NoTrace, TraceFrame, Tracer};
 pub use tsumo::{Rng, Tsumo};
 pub use versus::{Outcome, PlayerTurn, Versus, VersusStep};

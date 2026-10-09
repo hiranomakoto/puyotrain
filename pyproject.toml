@@ -11,6 +11,16 @@ dependencies = ["numpy>=1.21", "gymnasium>=0.29"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+rl = [
+    "torch>=2.1",
+    "stable-baselines3>=2.3",
+    "sb3-contrib>=2.3",
+    "tensorboard>=2.14",
+    "pyyaml>=6",
+    "pillow>=10.1",
+    "imageio>=2.31",
+    "imageio-ffmpeg>=0.4.9",
+]
 
 [tool.maturin]
 manifest-path = "puyo-py/Cargo.toml"

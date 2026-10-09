@@ -1,0 +1,44 @@
+"""方策ネットの特徴抽出器: 盤面を小さな CNN に通し、ネクスト等と結合する。"""
+
+from __future__ import annotations
+
+import gymnasium as gym
+import numpy as np
+import torch as th
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from torch import nn
+
+
+class PuyoFeatures(BaseFeaturesExtractor):
+    """観測 dict → 特徴ベクトル。
+
+    - ``board[:, 0]``(自分の盤面、6平面 × 13段 × 6列)を 3x3 畳み込みに通す。
+    - ``pieces``(現在・ネクスト・ネクネクのワンホット)と ``ojama``(/30 で正規化)を結合する。
+    - ``action_mask`` は特徴に使わない(MaskablePPO がマスクとして使う)。
+    相手盤面は使わないので、1人用で学習した重みを対戦でもそのまま使える。
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Dict,
+        cnn_channels: tuple[int, ...] = (32, 64),
+        features_dim: int = 256,
+    ):
+        super().__init__(observation_space, features_dim)
+        _, planes, height, width = observation_space["board"].shape
+        layers: list[nn.Module] = []
+        c_in = planes
+        for c in cnn_channels:
+            layers += [nn.Conv2d(c_in, c, kernel_size=3, padding=1), nn.ReLU()]
+            c_in = c
+        layers.append(nn.Flatten())
+        self.cnn = nn.Sequential(*layers)
+        n_cnn = c_in * height * width
+        n_extra = int(np.prod(observation_space["pieces"].shape)) + observation_space["ojama"].shape[0]
+        self.head = nn.Sequential(nn.Linear(n_cnn + n_extra, features_dim), nn.ReLU())
+
+    def forward(self, obs: dict[str, th.Tensor]) -> th.Tensor:
+        board = obs["board"][:, 0].float()
+        x = self.cnn(board)
+        extra = th.cat([obs["pieces"].flatten(1).float(), obs["ojama"].float() / 30.0], dim=1)
+        return self.head(th.cat([x, extra], dim=1))

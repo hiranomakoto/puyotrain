@@ -10,7 +10,8 @@
 use crate::action::{legal_actions, Action, ActionMask};
 use crate::color::Pair;
 use crate::game::{ojama_seed, StepError};
-use crate::phase::{exchange, fall_ojama, place_and_resolve, Placement, PlayerState};
+use crate::phase::{exchange, fall_ojama, place_and_resolve_with, Placement, PlayerState};
+use crate::trace::{FrameKind, NoTrace, TraceFrame, Tracer};
 use crate::tsumo::Tsumo;
 
 /// 対戦の結果。
@@ -94,6 +95,14 @@ impl Versus {
         [self.pair(0), self.pair(1), self.pair(2)]
     }
 
+    /// プレイヤー `i` のルールベース(2手読み)の手。終了後は `None`。
+    pub fn greedy_action(&self, i: usize, rng: &mut crate::tsumo::Rng) -> Option<Action> {
+        if self.is_over() {
+            return None;
+        }
+        crate::bot::greedy_action(&self.players[i].field, [self.pair(0), self.pair(1)], rng)
+    }
+
     /// プレイヤー `i` の合法手マスク(終了後は0)。
     pub fn legal_actions(&self, i: usize) -> ActionMask {
         if self.is_over() {
@@ -104,6 +113,27 @@ impl Versus {
     }
 
     pub fn step(&mut self, a0: Action, a1: Action) -> Result<VersusStep, StepError> {
+        self.step_with(a0, a1, &mut [NoTrace, NoTrace])
+    }
+
+    /// `step` と同じ。各プレイヤーの中間盤面(設置後・連鎖・おじゃま降下後)も返す。
+    #[allow(clippy::type_complexity)]
+    pub fn step_traced(
+        &mut self,
+        a0: Action,
+        a1: Action,
+    ) -> Result<(VersusStep, [Vec<TraceFrame>; 2]), StepError> {
+        let mut frames = [Vec::new(), Vec::new()];
+        let r = self.step_with(a0, a1, &mut frames)?;
+        Ok((r, frames))
+    }
+
+    pub fn step_with<T: Tracer>(
+        &mut self,
+        a0: Action,
+        a1: Action,
+        tracers: &mut [T; 2],
+    ) -> Result<VersusStep, StepError> {
         if self.is_over() {
             return Err(StepError::GameOver);
         }
@@ -118,11 +148,16 @@ impl Versus {
         let pair = self.tsumo.pair(self.turn);
         let mut res = [PlayerTurn::default(); 2];
         for (i, a) in [a0, a1].into_iter().enumerate() {
-            res[i].placement = place_and_resolve(&mut self.players[i], pair, a);
+            res[i].placement =
+                place_and_resolve_with(&mut self.players[i], pair, a, &mut tracers[i]);
         }
         for (i, r) in res.iter_mut().enumerate() {
             if r.placement.chain.chains == 0 {
                 r.ojama_dropped = fall_ojama(&mut self.players[i]);
+                if r.ojama_dropped > 0 {
+                    let st = &self.players[i];
+                    tracers[i].frame(FrameKind::OjamaDropped, &st.field, 0, 0, st.score);
+                }
             }
         }
         let sent = exchange(

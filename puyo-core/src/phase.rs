@@ -5,11 +5,12 @@
 //! 同じ部品を時間付きで呼ぶ別のスケジューラを書けばよい。
 
 use crate::action::{place_pair, Action};
-use crate::chain::{resolve_chain, ChainSummary};
+use crate::chain::{resolve_chain_with, ChainSummary};
 use crate::color::Pair;
 use crate::field::Field;
 use crate::rules::{MAX_OJAMA_DROP, WIDTH};
 use crate::score::{attack_ojama, offset};
+use crate::trace::{FrameKind, NoTrace, Tracer};
 use crate::tsumo::Rng;
 
 /// 1プレイヤー分の状態。`Copy` なので clone が安い。
@@ -53,9 +54,21 @@ pub struct Placement {
 
 /// 組ぷよを置き、連鎖を最後まで解決する。
 /// 連鎖が起きたら得点をおじゃまに換算し、全消しボーナスを消費する。
+#[inline]
 pub fn place_and_resolve(st: &mut PlayerState, pair: Pair, action: Action) -> Placement {
+    place_and_resolve_with(st, pair, action, &mut NoTrace)
+}
+
+/// `place_and_resolve` と同じ。設置後と連鎖の中間盤面を `tracer` に渡す。
+pub fn place_and_resolve_with<T: Tracer>(
+    st: &mut PlayerState,
+    pair: Pair,
+    action: Action,
+    tracer: &mut T,
+) -> Placement {
     place_pair(&mut st.field, pair, action);
-    let chain = resolve_chain(&mut st.field);
+    tracer.frame(FrameKind::Placed, &st.field, 0, 0, st.score);
+    let chain = resolve_chain_with(&mut st.field, st.score, tracer);
     let mut out = Placement {
         chain,
         ..Placement::default()

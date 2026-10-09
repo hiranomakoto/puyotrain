@@ -7,7 +7,10 @@ use pyo3::types::PyDict;
 
 use puyo_core::field::FULL_MASK;
 use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
-use puyo_core::{Action, ActionMask, Game, Outcome, Pair, PlayerState, Puyo, StepError, Versus};
+use puyo_core::{
+    Action, ActionMask, Field, Game, Outcome, Pair, PlayerState, Puyo, Rng, StepError, TraceFrame,
+    Versus, VersusStep,
+};
 
 /// 盤面平面の数: 空 + 4色 + おじゃま。
 const NUM_BOARD_PLANES: usize = NUM_COLORS + 2;
@@ -86,6 +89,65 @@ fn observation<'py>(
     Ok(d)
 }
 
+/// 盤面を (段, 列) の int8 配列にする。-1 = 空、0..=3 = 色、4 = おじゃま。段0 = 1段目。
+fn grid<'py>(py: Python<'py>, field: &Field) -> PyResult<Bound<'py, numpy::PyArray2<i8>>> {
+    let mut v = vec![-1i8; HEIGHT * WIDTH];
+    for p in Puyo::COLORS.into_iter().chain([Puyo::Ojama]) {
+        let mut b = field.plane(p) & FULL_MASK;
+        while b != 0 {
+            let i = b.trailing_zeros() as usize;
+            b &= b - 1;
+            v[(i % 16) * WIDTH + i / 16] = p.index() as i8;
+        }
+    }
+    PyArray1::from_vec(py, v).reshape([HEIGHT, WIDTH])
+}
+
+/// ビットマスクを (段, 列) の bool 配列にする。
+fn mask_grid<'py>(py: Python<'py>, mask: u128) -> PyResult<Bound<'py, numpy::PyArray2<bool>>> {
+    let mut v = vec![false; HEIGHT * WIDTH];
+    let mut b = mask & FULL_MASK;
+    while b != 0 {
+        let i = b.trailing_zeros() as usize;
+        b &= b - 1;
+        v[(i % 16) * WIDTH + i / 16] = true;
+    }
+    PyArray1::from_vec(py, v).reshape([HEIGHT, WIDTH])
+}
+
+/// トレースを dict のリストにする: kind, board, cleared, chain, score。
+fn frames_list<'py>(py: Python<'py>, frames: &[TraceFrame]) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    frames
+        .iter()
+        .map(|f| {
+            let d = PyDict::new(py);
+            d.set_item("kind", f.kind.name())?;
+            d.set_item("board", grid(py, &f.field)?)?;
+            d.set_item("cleared", mask_grid(py, f.cleared)?)?;
+            d.set_item("chain", f.chain)?;
+            d.set_item("score", f.score)?;
+            Ok(d)
+        })
+        .collect()
+}
+
+fn versus_results<'py>(py: Python<'py>, r: &VersusStep) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    r.players
+        .iter()
+        .map(|t| {
+            let d = PyDict::new(py);
+            d.set_item("score", t.placement.chain.score)?;
+            d.set_item("chains", t.placement.chain.chains)?;
+            d.set_item("all_clear", t.placement.all_clear)?;
+            d.set_item("attack", t.placement.attack)?;
+            d.set_item("ojama_sent", t.ojama_sent)?;
+            d.set_item("ojama_dropped", t.ojama_dropped)?;
+            d.set_item("dead", t.dead)?;
+            Ok(d)
+        })
+        .collect()
+}
+
 fn pair_tuple(p: Pair) -> (usize, usize) {
     (p.axis.index(), p.child.index())
 }
@@ -111,6 +173,36 @@ impl PyGame {
         let r = self.inner.step(action(action_index)?).map_err(to_py_err)?;
         let p = r.placement;
         Ok((p.chain.score, p.chain.chains, p.all_clear, r.dead))
+    }
+
+    /// `step` と同じ。加えて中間盤面のリスト(設置後、各連鎖の消去前・消去後・落下後)を返す。
+    #[allow(clippy::type_complexity)]
+    fn step_traced<'py>(
+        &mut self,
+        py: Python<'py>,
+        action_index: usize,
+    ) -> PyResult<((u32, u32, bool, bool), Vec<Bound<'py, PyDict>>)> {
+        let (r, frames) = self
+            .inner
+            .step_traced(action(action_index)?)
+            .map_err(to_py_err)?;
+        let p = r.placement;
+        Ok((
+            (p.chain.score, p.chain.chains, p.all_clear, r.dead),
+            frames_list(py, &frames)?,
+        ))
+    }
+
+    /// ルールベース(2手読み)の手。同点時の乱数は `seed` から決まる。終了後は None。
+    fn greedy_action(&self, seed: u64) -> Option<usize> {
+        self.inner
+            .greedy_action(&mut Rng::new(seed))
+            .map(Action::index)
+    }
+
+    /// 現在の盤面 (13, 6) int8。-1 = 空、0..=3 = 色、4 = おじゃま。段0 = 1段目。
+    fn board<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray2<i8>>> {
+        grid(py, self.inner.field())
     }
 
     /// 合法手のビットマスク(int)。
@@ -215,20 +307,43 @@ impl PyVersus {
             .inner
             .step(action(a0)?, action(a1)?)
             .map_err(to_py_err)?;
-        r.players
-            .iter()
-            .map(|t| {
-                let d = PyDict::new(py);
-                d.set_item("score", t.placement.chain.score)?;
-                d.set_item("chains", t.placement.chain.chains)?;
-                d.set_item("all_clear", t.placement.all_clear)?;
-                d.set_item("attack", t.placement.attack)?;
-                d.set_item("ojama_sent", t.ojama_sent)?;
-                d.set_item("ojama_dropped", t.ojama_dropped)?;
-                d.set_item("dead", t.dead)?;
-                Ok(d)
-            })
-            .collect()
+        versus_results(py, &r)
+    }
+
+    /// `step` と同じ。加えて各プレイヤーの中間盤面のリスト [P0, P1] を返す。
+    #[allow(clippy::type_complexity)]
+    fn step_traced<'py>(
+        &mut self,
+        py: Python<'py>,
+        a0: usize,
+        a1: usize,
+    ) -> PyResult<(Vec<Bound<'py, PyDict>>, Vec<Vec<Bound<'py, PyDict>>>)> {
+        let (r, frames) = self
+            .inner
+            .step_traced(action(a0)?, action(a1)?)
+            .map_err(to_py_err)?;
+        Ok((
+            versus_results(py, &r)?,
+            vec![frames_list(py, &frames[0])?, frames_list(py, &frames[1])?],
+        ))
+    }
+
+    /// プレイヤー `player` のルールベース(2手読み)の手。終了後は None。
+    fn greedy_action(&self, player: usize, seed: u64) -> PyResult<Option<usize>> {
+        check_player(player)?;
+        Ok(self
+            .inner
+            .greedy_action(player, &mut Rng::new(seed))
+            .map(Action::index))
+    }
+
+    fn board<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<i8>>> {
+        check_player(player)?;
+        grid(py, &self.inner.player(player).field)
     }
 
     fn legal_actions(&self, player: usize) -> PyResult<u32> {

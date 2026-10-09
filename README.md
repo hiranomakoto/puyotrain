@@ -7,6 +7,9 @@
 | `puyo-core/` | ルール実装。実行時の外部依存なし、`#![forbid(unsafe_code)]` |
 | `puyo-py/` | PyO3 + maturin による Python バインディング(`puyotrain._puyo`) |
 | `python/puyotrain/` | `PuyoSoloEnv` / `PuyoVersusEnv` |
+| `python/puyotrain/rl/` | 1人プレイの学習基盤(ベースライン、MaskablePPO、リプレイ、動画) |
+| `configs/solo_ppo.yaml` | 学習設定(1ファイルに集約) |
+| `scripts/` | `train.py` / `replay.py` / `render.py` / `render_all.py` / `baseline.py` / `bench_train.py` |
 | `python/tests/` | pytest |
 
 ルール定数は `puyo-core/src/rules.rs` に集約しています。
@@ -177,8 +180,127 @@ python python/benchmarks/bench_env.py        # Python
 | Python `PuyoSoloEnv.step`(観測あり) | 約 136,000 |
 | Python `PuyoVersusEnv.step`(観測2人分) | 約 54,000 |
 
+## 学習基盤(1人プレイ)
+
+### インストール
+
+```bash
+pip install -e ".[rl]"     # torch, sb3-contrib, tensorboard, pyyaml, pillow, imageio-ffmpeg
+```
+
+`imageio-ffmpeg` は ffmpeg のバイナリを同梱しているので、Windows でも ffmpeg を別に入れる必要はありません。
+
+**GPU(Windows / Linux)を使う場合**は、先に PyTorch 公式の CUDA 版を入れてから `.[rl]` を入れます
+(CUDA のバージョンは https://pytorch.org/get-started/locally/ で自分の環境に合うものを選ぶ)。
+
+```powershell
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+pip install -e ".[rl]"
+python -c "import torch; print(torch.cuda.is_available())"   # True なら OK
+```
+
+設定の `device: auto` で、GPU があれば自動で使います。GPU で速くなるかは構成次第なので、
+次のコマンドで CPU と GPU の学習速度(環境ステップ/秒)を比べてから決めてください。
+
+```bash
+python scripts/bench_train.py --devices cpu cuda --steps 30000
+python scripts/bench_train.py --devices cpu cuda --set env.n_envs=32   # 並列数を変えて比較
+```
+
+### ベースライン
+
+```bash
+python scripts/baseline.py random greedy --seeds 100     # 固定シード 0..99、上限500手
+```
+
+- `random`: 合法手から一様に選ぶ。
+- `greedy`: 2手読み(現在 + ネクストの 22×22 通り)で合計得点が最大の手を選ぶ。同点の場合は
+  「窒息しない → 同色の隣接数が多い → 最大の高さが低い → 乱数」の順に決める(`puyo-core/src/bot.rs`)。
+
+| エージェント | 平均得点 | 平均最大連鎖数 | 平均手数 | 窒息率 |
+|---|---|---|---|---|
+| random | 1,271 | 1.77 | 42 | 100% |
+| greedy | 50,985 | 4.11 | 500(上限) | 0% |
+
+### 学習
+
+```bash
+python scripts/train.py                                    # configs/solo_ppo.yaml の設定で学習
+python scripts/train.py --set ppo.total_timesteps=200000 --set checkpoint.every_steps=50000
+tensorboard --logdir runs
+```
+
+- アルゴリズムは sb3-contrib の `MaskablePPO`。行動マスクは環境の `action_masks()` から取ります。
+- 方策ネット(`python/puyotrain/rl/features.py`): 自分の盤面(6平面 × 13 × 6)を 3×3 畳み込み2層に通し、
+  ネクスト・ネクネクと予告おじゃまを結合して全結合層へ。相手盤面は使わないので、同じ重みで対戦もできます。
+- 環境は `SubprocVecEnv` で並列化(`env.n_envs`、`env.vec_env: dummy` で単一プロセス)。報酬は 得点 / 1000。
+- 設定はすべて `configs/solo_ppo.yaml` にあり、`--set キー=値` で上書きできます。
+
+TensorBoard に記録する指標:
+
+| タグ | 内容 |
+|---|---|
+| `eval/mean_score`, `eval/mean_max_chain` | 固定シード(既定100本)での平均得点・平均最大連鎖数(チェックポイントごと) |
+| `eval/score_vs_random`, `eval/score_vs_greedy`, `eval/chain_vs_*` | ベースラインとの比(1.0 で同等) |
+| `baseline/*` | ベースラインの値(比較用の水平線) |
+| `eval/mean_moves`, `eval/death_rate` | 平均手数・窒息率 |
+| `rollout/ep_score_mean`, `rollout/ep_max_chain_mean` | 学習中のエピソードの得点・最大連鎖 |
+
+### 出力(チェックポイント・指標・動画)
+
+```
+runs/<run_name>-<日時>/
+  config.yaml, config.json          使った設定
+  baseline.json                     ベースラインの評価結果(固定シード)
+  metrics.jsonl                     チェックポイントごとの指標(1行1件)
+  checkpoints/step_0000050000.zip   重み(checkpoint.every_steps ごと。古いものも消さない)
+  checkpoints/step_0000050000.json  その時点の指標・ベースライン比較・設定・経過時間
+  replays/step_0000050000_seed0.json リプレイ
+  videos/step_0000050000_seed0.mp4  動画(video.seeds の3本。保存のたびに自動生成)
+  videos/baseline_greedy_seed0.mp4  ベースラインの同じシードの動画(学習開始時)
+  tb/                               TensorBoard
+```
+
+### リプレイと動画
+
+```bash
+# チェックポイント(または random / greedy)で固定シードを打ってリプレイ JSON を保存し、動画も作る
+python scripts/replay.py --agent runs/<run>/checkpoints/step_0000200000.zip --seeds 0 1 2 --out-dir out --render
+
+# 対戦: 2つ指定すると盤面を左右に並べた動画になる(左 = --agent、右 = --agent2)
+python scripts/replay.py --agent runs/<run>/checkpoints/step_0000200000.zip \
+    --agent2 runs/<run>/checkpoints/step_0000050000.zip --seeds 0 --out-dir out --render
+
+# リプレイ JSON から MP4 を作る
+python scripts/render.py out/step_0000200000_seed0.json -o out/seed0.mp4
+
+# ランの全チェックポイント(とベースライン)の動画をまとめて作り直す
+python scripts/render_all.py runs/<run>            # 未作成のものだけ
+python scripts/render_all.py runs/<run> --force    # すべて作り直す(リプレイ JSON は再利用)
+```
+
+リプレイ形式(`python/puyotrain/rl/replay.py`):
+
+```json
+{"format": "puyotrain-replay", "version": 1, "mode": "solo", "seed": 0,
+ "actions": [3, 12, 7],
+ "meta": {"agents": [{"type": "ppo", "checkpoint": "...", "step": 200000}],
+          "labels": ["step_0000200000"], "training_steps": [200000],
+          "final_scores": [12340], "max_chains": [3], "moves": 500,
+          "result": "max_moves", "max_moves": 500, "created_at": "..."}}
+```
+
+対戦の `actions` は `[[左, 右], ...]` です。シミュレータは決定的なので、シードと行動列だけで対局を完全に再現できます。
+
+動画は、盤面、ネクスト・ネクネク、得点、現在の連鎖数、最大連鎖数、手数、学習ステップ数を描画します。
+連鎖は、`puyo-core` のトレース付き step(`Game.step_traced` / `Versus.step_traced`)が返す中間盤面
+(設置後 → 消去前(消えるぷよを強調)→ 消去後 → 落下後、対戦ではおじゃま降下後も)を順に再生します。
+コマ数や fps は設定の `video` で変えられます。
+
 ## テスト
 
 - `puyo-core/tests/rules.rs`: 得点(4個消し40点、2連鎖360点、連結・色数ボーナス)、おじゃまの換算・相殺・30個上限・全消しボーナス、猶予1手、窒息・引き分け
 - `puyo-core/tests/simulation.rs`: 落下後に浮いたぷよが無いこと(proptest)、同じシードでの再現、ランダムエージェント同士1000試合
+- `puyo-core/tests/trace.rs`: トレース付き step が通常の step と同じ結果になること、中間盤面の順序・得点・連鎖数
 - `python/tests/test_envs.py`: Gymnasium の `check_env`、観測レイアウト、再現性、1000試合
+- `python/tests/test_rl.py`: トレースのバインディング、ベースライン、リプレイの往復、動画生成、短い学習(チェックポイント・指標 JSON・動画・作り直し)。RL 用の依存が無い環境ではスキップ

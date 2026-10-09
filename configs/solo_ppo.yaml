@@ -1,0 +1,48 @@
+# 1人プレイ MaskablePPO の設定。CLI の --set a.b=値 で上書きできる。
+
+run_name: solo_ppo          # 出力先: <output_dir>/<run_name>-<日時>/
+output_dir: runs
+seed: 0
+device: auto                # auto / cpu / cuda
+
+env:
+  n_envs: 8                 # 並列環境数
+  vec_env: subproc          # subproc / dummy
+  max_steps: 500            # 1エピソードの上限手数(truncated)
+  reward_scale: 0.001       # 報酬 = 得点 × reward_scale
+
+ppo:
+  total_timesteps: 2000000
+  learning_rate: 3.0e-4
+  n_steps: 256              # 環境ごとのロールアウト長
+  batch_size: 512
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+policy:
+  cnn_channels: [32, 64]    # 盤面 CNN(3x3 畳み込み)のチャンネル数
+  features_dim: 256         # CNN 出力 + ネクスト等を結合した後の次元
+  net_arch: [128, 128]      # 方策・価値ヘッドの隠れ層
+
+checkpoint:
+  every_steps: 100000       # この間隔で重みを保存(古いものは消さない)
+
+eval:
+  seeds: {start: 0, count: 100}   # 固定シード(ゲームのシード)
+  max_steps: 500
+  deterministic: true
+  baselines: [random, greedy]
+
+video:
+  enabled: true             # チェックポイント保存のたびに動画を作る
+  seeds: [0, 1, 2]
+  max_moves: 500
+  fps: 30
+  frames_per_move: 4        # 連鎖の無い1手の表示フレーム数
+  frames_per_chain_stage: 8 # 消去前・消去後・落下後それぞれの表示フレーム数
+  end_hold_frames: 45       # 終局後に止める長さ

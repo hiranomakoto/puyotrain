@@ -5,7 +5,8 @@ use std::fmt;
 use crate::action::{legal_actions, Action, ActionMask};
 use crate::color::Pair;
 use crate::field::Field;
-use crate::phase::{place_and_resolve, Placement, PlayerState};
+use crate::phase::{place_and_resolve_with, Placement, PlayerState};
+use crate::trace::{NoTrace, TraceFrame, Tracer};
 use crate::tsumo::{mix64, Tsumo};
 
 /// `step` が受け付けられなかった理由。
@@ -97,6 +98,14 @@ impl Game {
         [self.pair(0), self.pair(1), self.pair(2)]
     }
 
+    /// ルールベース(2手読み)の手。終了後は `None`。
+    pub fn greedy_action(&self, rng: &mut crate::tsumo::Rng) -> Option<Action> {
+        if self.dead {
+            return None;
+        }
+        crate::bot::greedy_action(&self.player.field, [self.pair(0), self.pair(1)], rng)
+    }
+
     /// 合法手マスク(終了後は0)。
     pub fn legal_actions(&self) -> ActionMask {
         if self.dead {
@@ -107,6 +116,24 @@ impl Game {
     }
 
     pub fn step(&mut self, action: Action) -> Result<GameStep, StepError> {
+        self.step_with(action, &mut NoTrace)
+    }
+
+    /// `step` と同じ。設置後と連鎖の中間盤面(消去前・消去後・落下後)も返す。
+    pub fn step_traced(
+        &mut self,
+        action: Action,
+    ) -> Result<(GameStep, Vec<TraceFrame>), StepError> {
+        let mut frames = Vec::new();
+        let r = self.step_with(action, &mut frames)?;
+        Ok((r, frames))
+    }
+
+    pub fn step_with<T: Tracer>(
+        &mut self,
+        action: Action,
+        tracer: &mut T,
+    ) -> Result<GameStep, StepError> {
         if self.dead {
             return Err(StepError::GameOver);
         }
@@ -114,7 +141,7 @@ impl Game {
             return Err(StepError::IllegalAction { player: 0, action });
         }
         let pair = self.tsumo.pair(self.turn);
-        let placement = place_and_resolve(&mut self.player, pair, action);
+        let placement = place_and_resolve_with(&mut self.player, pair, action, tracer);
         self.turn += 1;
         self.dead = self.player.field.is_dead();
         Ok(GameStep {
