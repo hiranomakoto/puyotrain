@@ -211,11 +211,7 @@ def _draw_panel(img: Image.Image, ox: int, pv: PlayerView, move: int) -> None:
         d.text((sx, y + 14), val, font=_font(18), fill=color)
         y += 42
     if pv.chain and pv.cleared is not None:
-        label = f"{pv.chain} CHAIN!"
-        w = d.textlength(label, font=_font(22))
-        ty = by + CELL + 8
-        d.rectangle([bx, ty - 4, bx + BOARD_W, ty + 28], fill=(0, 0, 0))
-        d.text((bx + (BOARD_W - w) / 2, ty), label, font=_font(22), fill=ACCENT)
+        d.text((sx, PANEL_H - 52), f"{pv.chain} CHAIN!", font=_font(22), fill=ACCENT)
     if pv.banner:
         w = d.textlength(pv.banner, font=_font(24))
         cy = by + BOARD_H // 2

@@ -253,13 +253,31 @@ runs/<run_name>-<日時>/
   config.yaml, config.json          使った設定
   baseline.json                     ベースラインの評価結果(固定シード)
   metrics.jsonl                     チェックポイントごとの指標(1行1件)
-  checkpoints/step_0000050000.zip   重み(checkpoint.every_steps ごと。古いものも消さない)
+  checkpoints/step_0000050000.zip   重み(checkpoint.every_steps ごと。古いものも消さない。
+                                    学習終了時の重みも保存する。PPO はロールアウト単位で
+                                    終わるので、最後の1つは total_timesteps を少し超えた番号になる)
   checkpoints/step_0000050000.json  その時点の指標・ベースライン比較・設定・経過時間
   replays/step_0000050000_seed0.json リプレイ
   videos/step_0000050000_seed0.mp4  動画(video.seeds の3本。保存のたびに自動生成)
   videos/baseline_greedy_seed0.mp4  ベースラインの同じシードの動画(学習開始時)
   tb/                               TensorBoard
 ```
+
+### 短い学習の実行例
+
+`--set ppo.total_timesteps=200000 --set checkpoint.every_steps=50000`(他は既定値)で、
+CPU 4コアの Linux VM 上で約9分(評価・動画生成込み)。固定シード100本での評価:
+
+| ステップ | 平均得点 | 平均最大連鎖数 | 平均手数 | random 比 | greedy 比 |
+|---|---|---|---|---|---|
+| 50,000 | 2,289 | 2.19 | 51 | 1.80 | 0.045 |
+| 100,000 | 4,729 | 2.89 | 70 | 3.72 | 0.093 |
+| 150,000 | 1,909 | 2.10 | 41 | 1.50 | 0.037 |
+| 200,000 | 2,295 | 2.29 | 53 | 1.81 | 0.045 |
+| 200,704(終了時) | 2,529 | 2.29 | 52 | 1.99 | 0.050 |
+
+この長さではランダムは上回るものの、まだすぐ窒息する段階です(窒息率 100%)。
+同じ VM での学習速度は CPU で約 820 環境ステップ/秒(`bench_train.py`、8並列)。
 
 ### リプレイと動画
 
