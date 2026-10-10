@@ -13,21 +13,28 @@ from .._puyo import Game
 from .agents import Agent, make_agent
 
 
+# この連鎖数以上を「大連鎖」として、撃てたゲームの割合を数える
+BIG_CHAIN = 10
+
+
 def play_solo(agent: Agent, seed: int, max_steps: int) -> dict:
     """1局打つ。行動列も返す(リプレイに使える)。"""
     agent.reset(seed)
     g = Game(seed)
     actions: list[int] = []
     max_chain = 0
+    max_potential = 0
     while not g.is_over and g.turn < max_steps:
         a = agent.act(g)
         _, chains, _, _ = g.step(a)
         actions.append(a)
         max_chain = max(max_chain, chains)
+        max_potential = max(max_potential, g.potential_chain()[0])
     return {
         "seed": seed,
         "score": g.score,
         "max_chain": max_chain,
+        "max_potential": max_potential,
         "moves": g.turn,
         "dead": g.is_over,
         "actions": actions,
@@ -40,19 +47,26 @@ def play_solo_batched(agent, seeds: list[int], max_steps: int) -> list[dict]:
     games = [Game(s) for s in seeds]
     actions: list[list[int]] = [[] for _ in seeds]
     max_chain = [0] * len(seeds)
+    max_potential = [0] * len(seeds)
+    safe = getattr(agent, "safe_mask", False)
     while True:
         active = [i for i, g in enumerate(games) if not g.is_over and g.turn < max_steps]
         if not active:
             break
-        acts = agent.act_batch([games[i].observation() for i in active])
+        observations = [games[i].observation() for i in active]
+        if safe:
+            for i, o in zip(active, observations):
+                o["action_mask"] = games[i].safe_action_mask()
+        acts = agent.act_batch(observations)
         for i, a in zip(active, acts):
             _, chains, _, _ = games[i].step(a)
             actions[i].append(a)
             max_chain[i] = max(max_chain[i], chains)
+            max_potential[i] = max(max_potential[i], games[i].potential_chain()[0])
     return [
-        {"seed": s, "score": g.score, "max_chain": mc, "moves": g.turn, "dead": g.is_over,
-         "actions": acts}
-        for s, g, mc, acts in zip(seeds, games, max_chain, actions)
+        {"seed": s, "score": g.score, "max_chain": mc, "max_potential": mp, "moves": g.turn,
+         "dead": g.is_over, "actions": acts}
+        for s, g, mc, mp, acts in zip(seeds, games, max_chain, max_potential, actions)
     ]
 
 
@@ -72,6 +86,8 @@ def evaluate(agent: Agent, seeds: list[int], max_steps: int) -> dict:
         "median_score": float(np.median(scores)),
         "mean_max_chain": float(chains.mean()),
         "best_max_chain": int(chains.max()),
+        "big_chain_rate": float(np.mean(chains >= BIG_CHAIN)),
+        "mean_max_potential": float(np.mean([g["max_potential"] for g in games])),
         "mean_moves": float(np.mean([g["moves"] for g in games])),
         "death_rate": float(np.mean([g["dead"] for g in games])),
         "seconds": time.perf_counter() - t,

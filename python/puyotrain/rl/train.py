@@ -62,6 +62,9 @@ def _make_env(cfg: dict):
             reward_scale=env_cfg["reward_scale"],
             death_penalty=env_cfg["death_penalty"],
             survival_bonus=env_cfg["survival_bonus"],
+            potential_coef=env_cfg["potential_coef"],
+            potential_gamma=cfg["ppo"]["gamma"],
+            safe_mask=env_cfg["safe_mask"],
         )
 
     return factory
@@ -131,7 +134,7 @@ def build_callbacks(cfg: dict, run_dir: Path, baselines: dict, t0: float,
                 name = f"step_{self.last_saved:010d}"
                 ckpt = run_dir / "checkpoints" / f"{name}.zip"
                 agent = PPOAgent(ckpt, deterministic=cfg["eval"]["deterministic"],
-                                 model=self.model)
+                                 model=self.model, safe_mask=cfg["env"]["safe_mask"])
                 videos = [write_video(agent, s, name, run_dir, cfg, {"run": run_dir.name}).name
                           for s in cfg["video"]["seeds"]]
                 meta = ckpt.with_suffix(".json")
@@ -149,10 +152,12 @@ def build_callbacks(cfg: dict, run_dir: Path, baselines: dict, t0: float,
             self.model.save(str(ckpt))
             self.last_saved = step
 
-            agent = PPOAgent(ckpt, deterministic=cfg["eval"]["deterministic"], model=self.model)
+            agent = PPOAgent(ckpt, deterministic=cfg["eval"]["deterministic"], model=self.model,
+                             safe_mask=cfg["env"]["safe_mask"])
             metrics = evaluate(agent, seeds, cfg["eval"]["max_steps"])
             comparison = compare(metrics, baselines)
-            for k in ("mean_score", "mean_max_chain", "mean_moves", "death_rate"):
+            for k in ("mean_score", "mean_max_chain", "mean_moves", "death_rate",
+                      "big_chain_rate", "mean_max_potential"):
                 self.logger.record(f"eval/{k}", metrics[k])
             for k, v in comparison.items():
                 if v is not None:
@@ -190,6 +195,7 @@ def build_callbacks(cfg: dict, run_dir: Path, baselines: dict, t0: float,
             if self.verbose >= 0:
                 print(f"[checkpoint] {name}: mean_score={metrics['mean_score']:.1f} "
                       f"mean_max_chain={metrics['mean_max_chain']:.2f} "
+                      f"big_chain_rate={metrics['big_chain_rate']:.2f} "
                       f"({metrics['seconds']:.1f}s eval)", flush=True)
 
     return Checkpointer()

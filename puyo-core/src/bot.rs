@@ -9,7 +9,7 @@
 //!
 //! で決める。
 
-use crate::action::{legal_actions, place_pair, Action};
+use crate::action::{legal_actions, place_pair, Action, ActionMask};
 use crate::chain::resolve_chain;
 use crate::color::Pair;
 use crate::field::Field;
@@ -86,9 +86,70 @@ pub fn greedy_action(field: &Field, pairs: [Pair; 2], rng: &mut Rng) -> Option<A
     best.map(|(_, a)| a)
 }
 
+/// 自滅しない手のマスク。置いた直後に窒息する手と、ネクストをどう置いても窒息する手を除く。
+/// すべて除かれる場合は合法手をそのまま返す。
+pub fn safe_actions(field: &Field, pairs: [Pair; 2]) -> ActionMask {
+    let legal = legal_actions(field);
+    let mut safe = 0;
+    let mut m1 = legal;
+    while m1 != 0 {
+        let a1 = Action::new(m1.trailing_zeros() as usize).unwrap();
+        m1 &= m1 - 1;
+        let (f1, _) = simulate(field, pairs[0], a1);
+        if f1.is_dead() {
+            continue;
+        }
+        let mut m2 = legal_actions(&f1);
+        while m2 != 0 {
+            let a2 = Action::new(m2.trailing_zeros() as usize).unwrap();
+            m2 &= m2 - 1;
+            if !simulate(&f1, pairs[1], a2).0.is_dead() {
+                safe |= 1 << a1.index();
+                break;
+            }
+        }
+    }
+    if safe == 0 {
+        legal
+    } else {
+        safe
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_actions_avoid_death_column() {
+        // 列2(窒息列)が11段。縦置きで列2に置くと12段目が埋まって窒息する
+        let rows = [
+            "..R...", "..G...", "..B...", "..Y...", "..R...", "..G...", "..B...", "..Y...",
+            "..R...", "..G...", "..B...",
+        ];
+        let f = Field::from_rows(&rows).unwrap();
+        let pairs = [
+            Pair::new(Puyo::Red, Puyo::Green),
+            Pair::new(Puyo::Blue, Puyo::Yellow),
+        ];
+        let legal = legal_actions(&f);
+        let safe = safe_actions(&f, pairs);
+        assert_ne!(safe, legal);
+        assert_eq!(safe & !legal, 0);
+        let up_col2 = Action::from_placement(2, crate::action::Rotation::Up).unwrap();
+        assert!(legal & (1 << up_col2.index()) != 0);
+        assert!(safe & (1 << up_col2.index()) == 0);
+    }
+
+    #[test]
+    fn safe_actions_equal_legal_on_empty_field() {
+        let pairs = [
+            Pair::new(Puyo::Red, Puyo::Green),
+            Pair::new(Puyo::Blue, Puyo::Yellow),
+        ];
+        let f = Field::new();
+        assert_eq!(safe_actions(&f, pairs), legal_actions(&f));
+    }
     use crate::color::Puyo;
     use crate::Game;
 

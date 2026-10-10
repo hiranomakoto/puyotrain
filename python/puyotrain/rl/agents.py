@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Optional, Union
@@ -78,6 +79,15 @@ class GreedyAgent(Agent):
         return a
 
 
+def _trained_with_safe_mask(path: Path) -> bool:
+    """チェックポイントの記録(.json)から、学習時に自滅禁止マスクを使っていたかを読む。"""
+    meta = path.with_suffix(".json")
+    if not meta.exists():
+        return False
+    cfg = json.loads(meta.read_text(encoding="utf-8")).get("config", {})
+    return bool(cfg.get("env", {}).get("safe_mask", False))
+
+
 _STEP_RE = re.compile(r"step_(\d+)")
 
 
@@ -92,6 +102,10 @@ class PPOAgent(Agent):
 
     ``PPOAgent(path)`` でチェックポイントを読み込む。学習中のモデルを直接使うときは
     ``PPOAgent(path, model=model)``(ファイルは読まない)。
+
+    ``safe_mask`` が True なら、1人用では自滅する手(``Game.safe_actions``)を除いて選ぶ
+    (対戦では合法手のまま)。None なら、チェックポイント横の .json に記録された学習時の設定
+    ``env.safe_mask`` に合わせる。
     """
 
     kind = "ppo"
@@ -102,6 +116,7 @@ class PPOAgent(Agent):
         device: str = "cpu",
         deterministic: bool = True,
         model=None,
+        safe_mask: Optional[bool] = None,
     ):
         self.path = Path(path)
         if model is None:
@@ -111,9 +126,12 @@ class PPOAgent(Agent):
         self.model = model
         self.deterministic = deterministic
         self.step = checkpoint_step(self.path)
+        self.safe_mask = _trained_with_safe_mask(self.path) if safe_mask is None else safe_mask
 
     def act(self, state: State, player: int = 0) -> int:
         obs = _observation(state, player)
+        if self.safe_mask and isinstance(state, Game):
+            obs["action_mask"] = state.safe_action_mask()
         mask = obs["action_mask"].astype(bool)
         action, _ = self.model.predict(obs, action_masks=mask, deterministic=self.deterministic)
         return int(action)

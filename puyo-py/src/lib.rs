@@ -200,6 +200,23 @@ impl PyGame {
             .map(Action::index)
     }
 
+    /// 自滅しない手のビットマスク(int)。置いた直後に窒息する手と、ネクストを
+    /// どう置いても窒息する手を除く。すべて除かれる場合は合法手と同じ。終了後は0。
+    fn safe_actions(&self) -> u32 {
+        self.inner.safe_actions()
+    }
+
+    /// `safe_actions` を長さ22の int8 配列で返す。
+    fn safe_action_mask<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i8>> {
+        PyArray1::from_vec(py, mask_vec(self.inner.safe_actions()))
+    }
+
+    /// 潜在連鎖 (連鎖数, 得点)。どこかの列に同じ色を1〜2個足したときに起きる最大の連鎖。
+    fn potential_chain(&self) -> (u32, u32) {
+        let p = self.inner.potential_chain();
+        (p.chains, p.score)
+    }
+
     /// 現在の盤面 (13, 6) int8。-1 = 空、0..=3 = 色、4 = おじゃま。段0 = 1段目。
     fn board<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray2<i8>>> {
         grid(py, self.inner.field())

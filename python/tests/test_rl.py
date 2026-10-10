@@ -137,6 +137,56 @@ def test_env_death_penalty_and_survival_bonus():
         assert abs(r - (base + 0.01)) < 1e-9
 
 
+def test_env_potential_shaping_telescopes():
+    # gamma=1 なら整形の合計は Φ(最後) − Φ(最初) = 0 − 0(窒息で Φ = 0)
+    env = PuyoSoloEnv(reward_scale=0.001, potential_coef=1.0, potential_gamma=1.0)
+    rng = np.random.default_rng(1)
+    for seed in range(5):
+        obs, _ = env.reset(options={"game_seed": seed})
+        total, saw_potential = 0.0, False
+        while True:
+            obs, r, term, trunc, info = env.step(int(rng.choice(np.flatnonzero(obs["action_mask"]))))
+            total += r
+            saw_potential |= info["potential_chain"] > 0
+            if term or trunc:
+                break
+        assert term
+        assert saw_potential
+        assert abs(total - info["total_score"] * 0.001) < 1e-9
+
+
+def test_env_safe_mask():
+    env = PuyoSoloEnv(safe_mask=True)
+    rng = np.random.default_rng(2)
+    obs, _ = env.reset(options={"game_seed": 3})
+    narrowed = False
+    while True:
+        safe = env.action_masks()
+        legal = env.game.action_mask().astype(bool)
+        assert (obs["action_mask"].astype(bool) == safe).all()
+        assert not (safe & ~legal).any()
+        narrowed |= (safe != legal).any()
+        obs, r, term, trunc, _ = env.step(int(rng.choice(np.flatnonzero(safe))))
+        if term or trunc:
+            break
+    assert narrowed
+
+
+def test_ppo_agent_reads_safe_mask_from_checkpoint_record(tmp_path):
+    from puyotrain.rl.agents import _trained_with_safe_mask
+
+    ckpt = tmp_path / "step_0000000100.zip"
+    assert _trained_with_safe_mask(ckpt) is False
+    ckpt.with_suffix(".json").write_text(json.dumps({"config": {"env": {"safe_mask": True}}}))
+    assert _trained_with_safe_mask(ckpt) is True
+
+
+def test_evaluate_reports_big_chain_metrics():
+    m = evaluate(GreedyAgent(), [0, 1], 60)
+    assert 0.0 <= m["big_chain_rate"] <= 1.0
+    assert m["mean_max_potential"] >= 1
+
+
 def test_features_piece_planes():
     th = pytest.importorskip("torch")
     pytest.importorskip("stable_baselines3")
@@ -204,6 +254,24 @@ def test_render_mp4(tmp_path):
 
 
 # ---------------------------------------------------------------- training (torch)
+
+
+def test_tiny_training_run_with_shaping_and_safe_mask(tmp_path):
+    pytest.importorskip("sb3_contrib")
+    from puyotrain.rl.agents import PPOAgent
+    from puyotrain.rl.train import train
+
+    cfg = load_config(overrides=[
+        "env.n_envs=2", "ppo.total_timesteps=128", "ppo.n_steps=64", "ppo.batch_size=64",
+        "ppo.n_epochs=1", "checkpoint.every_steps=128", "eval.seeds.count=2",
+        "eval.max_steps=20", "eval.baselines=[random]", "video.enabled=false",
+        "env.potential_coef=1.0", "env.safe_mask=true",
+    ])
+    run = train(cfg, tmp_path / "run")
+    ckpt = run / "checkpoints" / "step_0000000128.zip"
+    assert PPOAgent(ckpt).safe_mask is True
+    record = json.loads((run / "metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert "big_chain_rate" in record["metrics"]
 
 
 def test_tiny_training_run(tmp_path):

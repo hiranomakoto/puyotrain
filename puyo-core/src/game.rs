@@ -106,6 +106,20 @@ impl Game {
         crate::bot::greedy_action(&self.player.field, [self.pair(0), self.pair(1)], rng)
     }
 
+    /// 自滅しない手のマスク([`crate::bot::safe_actions`])。終了後は0。
+    pub fn safe_actions(&self) -> ActionMask {
+        if self.dead {
+            0
+        } else {
+            crate::bot::safe_actions(&self.player.field, [self.pair(0), self.pair(1)])
+        }
+    }
+
+    /// 現在の盤面の潜在連鎖([`crate::potential::potential_chain`])。
+    pub fn potential_chain(&self) -> crate::potential::Potential {
+        crate::potential::potential_chain(&self.player.field)
+    }
+
     /// 合法手マスク(終了後は0)。
     pub fn legal_actions(&self) -> ActionMask {
         if self.dead {

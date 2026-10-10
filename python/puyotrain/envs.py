@@ -21,10 +21,16 @@ class PuyoSoloEnv(gym.Env):
         reward_scale: 報酬に掛ける係数(学習では 0.001 など)。
         death_penalty: 窒息した手の報酬から引く値(reward_scale は掛けない)。
         survival_bonus: 窒息しなかった手ごとに足す値(reward_scale は掛けない)。
+        potential_coef: 潜在連鎖による報酬整形の係数。Φ(s) = potential_coef × 潜在連鎖数
+            として、毎手 ``potential_gamma × Φ(置いた後) − Φ(置く前)`` を報酬に足す
+            (窒息したら Φ(置いた後) = 0)。ポテンシャルに基づく整形なので最適方策は変わらない。
+        potential_gamma: 整形に使う割引率。学習の gamma と同じ値にする。
+        safe_mask: True なら自滅する手(``Game.safe_actions``)を行動マスクで禁止する。
         render_mode: None または "ansi"。
 
     ``reset(options={"game_seed": s})`` でゲームのシードを直接指定できる
     (固定シード評価用)。info には ``max_chain``(このエピソードの最大連鎖数)が入る。
+    ``potential_coef`` が0でなければ ``potential_chain``(置いた後の潜在連鎖数)も入る。
     """
 
     metadata = {"render_modes": ["ansi"]}
@@ -35,6 +41,9 @@ class PuyoSoloEnv(gym.Env):
         reward_scale: float = 1.0,
         death_penalty: float = 0.0,
         survival_bonus: float = 0.0,
+        potential_coef: float = 0.0,
+        potential_gamma: float = 0.99,
+        safe_mask: bool = False,
         render_mode: Optional[str] = None,
     ):
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
@@ -44,10 +53,20 @@ class PuyoSoloEnv(gym.Env):
         self.reward_scale = reward_scale
         self.death_penalty = death_penalty
         self.survival_bonus = survival_bonus
+        self.potential_coef = potential_coef
+        self.potential_gamma = potential_gamma
+        self.safe_mask = safe_mask
         self.observation_space = observation_space()
         self.action_space = action_space()
         self.game: Optional[Game] = None
         self.max_chain = 0
+        self.potential = 0
+
+    def _observation(self) -> dict:
+        obs = self.game.observation()
+        if self.safe_mask:
+            obs["action_mask"] = self.game.safe_action_mask()
+        return obs
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
@@ -57,7 +76,8 @@ class PuyoSoloEnv(gym.Env):
             game_seed = int(self.np_random.integers(0, _SEED_HIGH))
         self.game = Game(game_seed)
         self.max_chain = 0
-        return self.game.observation(), {"game_seed": game_seed}
+        self.potential = 0
+        return self._observation(), {"game_seed": game_seed}
 
     def step(self, action):
         if self.game is None:
@@ -77,13 +97,19 @@ class PuyoSoloEnv(gym.Env):
         }
         reward = float(score) * self.reward_scale
         reward += -self.death_penalty if dead else self.survival_bonus
-        return self.game.observation(), reward, terminated, truncated, info
+        if self.potential_coef:
+            potential = 0 if dead else self.game.potential_chain()[0]
+            reward += self.potential_coef * (self.potential_gamma * potential - self.potential)
+            self.potential = potential
+            info["potential_chain"] = potential
+        return self._observation(), reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
-        """合法手マスク(sb3-contrib の MaskablePPO 互換)。"""
+        """行動マスク(sb3-contrib の MaskablePPO 互換)。``safe_mask`` なら自滅する手も除く。"""
         if self.game is None:
             raise RuntimeError("call reset() before action_masks()")
-        return self.game.action_mask().astype(bool)
+        mask = self.game.safe_action_mask() if self.safe_mask else self.game.action_mask()
+        return mask.astype(bool)
 
     def render(self):
         if self.render_mode == "ansi" and self.game is not None:
