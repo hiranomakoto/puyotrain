@@ -19,7 +19,8 @@
   Safe to run again: existing .venv is reused, finished steps are quick.
 
 .PARAMETER Python
-  Python version for the py launcher (default 3.12).
+  Python version to use, e.g. 3.12. Default: auto (3.12 preferred, then 3.13 / 3.11 / 3.10,
+  through the py launcher or "python" on PATH).
 .PARAMETER Cpu
   Install CPU-only PyTorch even if an NVIDIA GPU is present.
 .PARAMETER CudaIndexes
@@ -30,7 +31,7 @@
   Skip the training speed measurement.
 #>
 param(
-    [string]$Python = "3.12",
+    [string]$Python = "",
     [switch]$Cpu,
     [string[]]$CudaIndexes = @("cu130", "cu128", "cu126"),
     [switch]$SkipTests,
@@ -65,6 +66,17 @@ function Invoke-Quiet {
     return $LASTEXITCODE
 }
 
+# Run a native command and return its combined output as text (never stops the script).
+function Get-QuietOutput {
+    $exe = $args[0]
+    $rest = @($args | Select-Object -Skip 1)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { return ((& $exe @rest 2>&1 | ForEach-Object { "$_" }) -join "`n").Trim() }
+    catch { return "" }
+    finally { $ErrorActionPreference = $old }
+}
+
 # ------------------------------------------------------------------ 1. prerequisites
 Step "Checking prerequisites"
 $missing = @()
@@ -84,12 +96,35 @@ if (-not $vcPath) {
     $missing += ("MSVC:       winget install --id Microsoft.VisualStudio.2022.BuildTools -e " +
                  "--override ""--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended""")
 }
-$pyOk = $false
+# Find a Python that PyTorch supports. $pyCmd is the command (with launcher flag) to run it.
+$pyCmd = $null
+$wanted = @("3.12", "3.13", "3.11", "3.10")
+if ($Python) { $wanted = @($Python) }
 if (Has py) {
-    $pyOk = ((Invoke-Quiet py "-$Python" -c "import sys") -eq 0)
+    foreach ($v in $wanted) {
+        if ((Invoke-Quiet py "-$v" -c "import sys") -eq 0) { $pyCmd = @("py", "-$v"); break }
+    }
 }
-if (-not $pyOk) {
-    $missing += "Python $($Python): winget install --id Python.Python.$Python -e   (then open a new terminal)"
+if (-not $pyCmd -and (Has python)) {
+    # "python" on PATH (may be the Microsoft Store placeholder, which fails this check)
+    $range = "(3,10) <= sys.version_info[:2] <= (3,13)"
+    if ($Python) { $range = "'%d.%d' % sys.version_info[:2] == '$Python'" }
+    if ((Invoke-Quiet python -c "import sys; sys.exit(0 if $range else 1)") -eq 0) { $pyCmd = @("python") }
+}
+if (-not $pyCmd) {
+    $found = @()
+    if (Has py) { $found += ("py --list:`n" + (Get-QuietOutput py --list)) }
+    if (Has python) { $found += ("python on PATH: " + (Get-QuietOutput python --version)) }
+    if ($found.Count -eq 0) { $found = @("(no python / py found)") }
+    Write-Host "Python found on this PC:" -ForegroundColor Yellow
+    $found | ForEach-Object { Write-Host "  $_" }
+    $missing += "Python 3.12: winget install --id Python.Python.3.12 -e   (then open a new terminal)"
+}
+function Invoke-BasePython {
+    $exe = $pyCmd[0]
+    $rest = @($pyCmd | Select-Object -Skip 1) + @($args)
+    & $exe @rest
+    if ($LASTEXITCODE -ne 0) { Fail "'$($pyCmd -join ' ') $($args -join ' ')' failed (exit $LASTEXITCODE)" }
 }
 if ($missing.Count -gt 0) {
     Write-Host "Missing prerequisites. Install them, open a NEW terminal, and run this script again:" -ForegroundColor Yellow
@@ -99,13 +134,13 @@ if ($missing.Count -gt 0) {
 Write-Host ("git: {0}" -f (git --version))
 Write-Host ("rust: {0}" -f (rustc --version))
 Write-Host ("MSVC: {0}" -f $vcPath)
-Write-Host ("python: {0}" -f (py "-$Python" --version))
+Write-Host ("python: {0} ({1})" -f (Invoke-BasePython --version | Out-String).Trim(), ($pyCmd -join ' '))
 
 # ------------------------------------------------------------------ 2. venv
-Step "Creating virtual environment (.venv, Python $Python)"
+Step "Creating virtual environment (.venv)"
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) {
-    Invoke-Native py "-$Python" -m venv .venv
+    Invoke-BasePython -m venv .venv
 } else {
     Write-Host "reusing existing .venv"
 }
