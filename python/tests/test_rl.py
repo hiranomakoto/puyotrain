@@ -124,6 +124,39 @@ def test_env_game_seed_and_reward_scale():
     assert info["max_chain"] >= 0
 
 
+def test_env_death_penalty_and_survival_bonus():
+    env = PuyoSoloEnv(reward_scale=0.001, death_penalty=1.0, survival_bonus=0.01)
+    obs, _ = env.reset(options={"game_seed": 5})
+    rng = np.random.default_rng(0)
+    while True:
+        obs, r, term, trunc, info = env.step(int(rng.choice(np.flatnonzero(obs["action_mask"]))))
+        base = info["score"] * 0.001
+        if term:
+            assert abs(r - (base - 1.0)) < 1e-9
+            break
+        assert abs(r - (base + 0.01)) < 1e-9
+
+
+def test_features_piece_planes():
+    th = pytest.importorskip("torch")
+    pytest.importorskip("stable_baselines3")
+    from puyotrain.rl.features import PuyoFeatures
+
+    env = PuyoSoloEnv()
+    obs, _ = env.reset(seed=0)
+    batch = {k: th.as_tensor(np.stack([v, v])) for k, v in obs.items()}
+    batch["pieces"][1] = batch["pieces"][1].flip(-1)  # 2つ目だけ色を入れ替える
+    for planes in (False, True):
+        f = PuyoFeatures(env.observation_space, cnn_channels=(4,), features_dim=8,
+                         piece_planes=planes)
+        assert f.cnn[0].in_channels == 6 + (24 if planes else 0)
+        cnn_out = []
+        f.cnn.register_forward_hook(lambda m, i, o: cnn_out.append(o))
+        assert f(batch).shape == (2, 8)
+        # 平面ありのときだけ、ツモの色の違いが CNN の出力に現れる
+        assert th.allclose(cnn_out[0][0], cnn_out[0][1]) != planes
+
+
 # ---------------------------------------------------------------- replay & render
 
 

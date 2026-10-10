@@ -57,7 +57,12 @@ def _make_env(cfg: dict):
     env_cfg = cfg["env"]
 
     def factory():
-        return PuyoSoloEnv(max_steps=env_cfg["max_steps"], reward_scale=env_cfg["reward_scale"])
+        return PuyoSoloEnv(
+            max_steps=env_cfg["max_steps"],
+            reward_scale=env_cfg["reward_scale"],
+            death_penalty=env_cfg["death_penalty"],
+            survival_bonus=env_cfg["survival_bonus"],
+        )
 
     return factory
 
@@ -223,6 +228,7 @@ def build_model(cfg: dict, device: str, tensorboard_log: str | None):
             "features_extractor_kwargs": {
                 "cnn_channels": tuple(pcfg["cnn_channels"]),
                 "features_dim": pcfg["features_dim"],
+                "piece_planes": pcfg["piece_planes"],
             },
             "net_arch": {"pi": list(pcfg["net_arch"]), "vf": list(pcfg["net_arch"])},
         },

@@ -237,7 +237,8 @@ tensorboard --logdir runs
 - 環境は `env.n_envs` 個を並列に進めます(既定は1プロセス内でまとめて進める `DummyVecEnv`)。
   環境の1手は Rust で非常に速いため、プロセスを分ける `SubprocVecEnv`(`env.vec_env: subproc`)より
   プロセス間通信の分だけ遅くなりにくく、計測では 8並列で 1,581 対 1,128 ステップ/秒でした。
-  報酬は 得点 / 1000。
+  報酬は 得点 / 1000。`env.death_penalty` で窒息した手から罰を引き、`env.survival_bonus` で
+  生き残った手ごとにボーナスを足せます(どちらも既定 0)。
 - 設定はすべて `configs/solo_ppo.yaml` にあり、`--set キー=値` で上書きできます。
 
 TensorBoard に記録する指標:

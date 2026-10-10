@@ -19,6 +19,8 @@ class PuyoSoloEnv(gym.Env):
     Args:
         max_steps: この手数で truncated にする。None なら無制限。
         reward_scale: 報酬に掛ける係数(学習では 0.001 など)。
+        death_penalty: 窒息した手の報酬から引く値(reward_scale は掛けない)。
+        survival_bonus: 窒息しなかった手ごとに足す値(reward_scale は掛けない)。
         render_mode: None または "ansi"。
 
     ``reset(options={"game_seed": s})`` でゲームのシードを直接指定できる
@@ -31,6 +33,8 @@ class PuyoSoloEnv(gym.Env):
         self,
         max_steps: Optional[int] = None,
         reward_scale: float = 1.0,
+        death_penalty: float = 0.0,
+        survival_bonus: float = 0.0,
         render_mode: Optional[str] = None,
     ):
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
@@ -38,6 +42,8 @@ class PuyoSoloEnv(gym.Env):
         self.render_mode = render_mode
         self.max_steps = max_steps
         self.reward_scale = reward_scale
+        self.death_penalty = death_penalty
+        self.survival_bonus = survival_bonus
         self.observation_space = observation_space()
         self.action_space = action_space()
         self.game: Optional[Game] = None
@@ -70,6 +76,7 @@ class PuyoSoloEnv(gym.Env):
             "max_chain": self.max_chain,
         }
         reward = float(score) * self.reward_scale
+        reward += -self.death_penalty if dead else self.survival_bonus
         return self.game.observation(), reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
