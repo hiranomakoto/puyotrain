@@ -65,6 +65,7 @@ def _make_env(cfg: dict):
             potential_coef=env_cfg["potential_coef"],
             potential_gamma=cfg["ppo"]["gamma"],
             safe_mask=env_cfg["safe_mask"],
+            action_features=cfg["policy"]["action_features"],
         )
 
     return factory
@@ -220,24 +221,37 @@ def build_model(cfg: dict, device: str, tensorboard_log: str | None):
     """設定から並列環境と MaskablePPO を作る。戻り値: (model, env, total_timesteps)。"""
     from sb3_contrib import MaskablePPO
 
-    from .features import PuyoFeatures
+    from .features import PuyoActionFeatures, PuyoActionPolicy, PuyoFeatures
 
     env = build_env(cfg, cfg["seed"])
     pcfg = cfg["policy"]
     ppo = dict(cfg["ppo"])
     total = int(ppo.pop("total_timesteps"))
-    model = MaskablePPO(
-        "MultiInputPolicy",
-        env,
-        policy_kwargs={
+    extractor_kwargs = {
+        "cnn_channels": tuple(pcfg["cnn_channels"]),
+        "features_dim": pcfg["features_dim"],
+        "piece_planes": pcfg["piece_planes"],
+    }
+    if pcfg["action_features"]:
+        # 手ごとの点数がそのままロジットになるよう、方策側の隠れ層は無し
+        policy = PuyoActionPolicy
+        extractor_kwargs["action_hidden"] = tuple(pcfg["action_hidden"])
+        policy_kwargs = {
+            "features_extractor_class": PuyoActionFeatures,
+            "features_extractor_kwargs": extractor_kwargs,
+            "net_arch": {"pi": [], "vf": list(pcfg["net_arch"])},
+        }
+    else:
+        policy = "MultiInputPolicy"
+        policy_kwargs = {
             "features_extractor_class": PuyoFeatures,
-            "features_extractor_kwargs": {
-                "cnn_channels": tuple(pcfg["cnn_channels"]),
-                "features_dim": pcfg["features_dim"],
-                "piece_planes": pcfg["piece_planes"],
-            },
+            "features_extractor_kwargs": extractor_kwargs,
             "net_arch": {"pi": list(pcfg["net_arch"]), "vf": list(pcfg["net_arch"])},
-        },
+        }
+    model = MaskablePPO(
+        policy,
+        env,
+        policy_kwargs=policy_kwargs,
         tensorboard_log=tensorboard_log,
         device=device,
         seed=cfg["seed"],

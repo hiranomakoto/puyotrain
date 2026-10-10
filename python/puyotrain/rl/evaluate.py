@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .._puyo import Game
+from ..envs import solo_observation
 from .agents import Agent, make_agent
 
 
@@ -49,15 +50,12 @@ def play_solo_batched(agent, seeds: list[int], max_steps: int) -> list[dict]:
     max_chain = [0] * len(seeds)
     max_potential = [0] * len(seeds)
     safe = getattr(agent, "safe_mask", False)
+    feats = getattr(agent, "action_features", False)
     while True:
         active = [i for i, g in enumerate(games) if not g.is_over and g.turn < max_steps]
         if not active:
             break
-        observations = [games[i].observation() for i in active]
-        if safe:
-            for i, o in zip(active, observations):
-                o["action_mask"] = games[i].safe_action_mask()
-        acts = agent.act_batch(observations)
+        acts = agent.act_batch([solo_observation(games[i], safe, feats) for i in active])
         for i, a in zip(active, acts):
             _, chains, _, _ = games[i].step(a)
             actions[i].append(a)

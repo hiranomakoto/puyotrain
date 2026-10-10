@@ -115,6 +115,17 @@ impl Game {
         }
     }
 
+    /// 手ごとの結果の特徴量([`crate::afterstate::action_features`])。終了後は全部0。
+    pub fn action_features(
+        &self,
+    ) -> [[f32; crate::afterstate::NUM_ACTION_FEATURES]; crate::rules::NUM_ACTIONS] {
+        if self.dead {
+            [[0.0; crate::afterstate::NUM_ACTION_FEATURES]; crate::rules::NUM_ACTIONS]
+        } else {
+            crate::afterstate::action_features(&self.player.field, [self.pair(0), self.pair(1)])
+        }
+    }
+
     /// 現在の盤面の潜在連鎖([`crate::potential::potential_chain`])。
     pub fn potential_chain(&self) -> crate::potential::Potential {
         crate::potential::potential_chain(&self.player.field)

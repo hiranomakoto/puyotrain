@@ -172,6 +172,38 @@ def test_env_safe_mask():
     assert narrowed
 
 
+def test_env_action_features():
+    from puyotrain import _puyo
+    from puyotrain.envs import solo_observation
+
+    env = PuyoSoloEnv(action_features=True)
+    obs, _ = env.reset(options={"game_seed": 4})
+    assert obs["action_features"].shape == (22, _puyo.NUM_ACTION_FEATURES)
+    assert len(_puyo.ACTION_FEATURE_NAMES) == _puyo.NUM_ACTION_FEATURES
+    assert env.observation_space.contains(obs)
+    legal = obs["action_mask"].astype(bool)
+    assert (obs["action_features"][:, 0].astype(bool) == legal).all()
+    assert (obs["action_features"][~legal] == 0).all()
+    np.testing.assert_array_equal(obs["action_features"],
+                                  solo_observation(env.game, action_features=True)["action_features"])
+    assert "action_features" not in PuyoSoloEnv().reset(seed=0)[0]
+
+
+def test_safe_mask_from_action_features_matches_game():
+    from puyotrain.envs import solo_observation
+
+    rng = np.random.default_rng(5)
+    narrowed = 0
+    for seed in range(10):
+        g = Game(seed)
+        while not g.is_over:
+            obs = solo_observation(g, safe_mask=True, action_features=True)
+            np.testing.assert_array_equal(obs["action_mask"], g.safe_action_mask())
+            narrowed += int((obs["action_mask"] != g.action_mask()).any())
+            g.step(int(rng.choice(np.flatnonzero(g.action_mask()))))
+    assert narrowed > 0
+
+
 def test_ppo_agent_reads_safe_mask_from_checkpoint_record(tmp_path):
     from puyotrain.rl.agents import _trained_with_safe_mask
 
@@ -272,6 +304,37 @@ def test_tiny_training_run_with_shaping_and_safe_mask(tmp_path):
     assert PPOAgent(ckpt).safe_mask is True
     record = json.loads((run / "metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert "big_chain_rate" in record["metrics"]
+
+
+def test_tiny_training_run_with_action_features(tmp_path):
+    th = pytest.importorskip("torch")
+    pytest.importorskip("sb3_contrib")
+    from puyotrain.envs import solo_observation
+    from puyotrain.rl.agents import PPOAgent
+    from puyotrain.rl.features import PuyoActionPolicy, TakeFirst
+    from puyotrain.rl.train import train
+
+    cfg = load_config(overrides=[
+        "env.n_envs=2", "ppo.total_timesteps=128", "ppo.n_steps=64", "ppo.batch_size=64",
+        "ppo.n_epochs=1", "checkpoint.every_steps=128", "eval.seeds.count=2",
+        "eval.max_steps=20", "eval.baselines=[random]", "video.enabled=false",
+        "policy.action_features=true", "policy.action_hidden=[16]",
+    ])
+    run = train(cfg, tmp_path / "run")
+    agent = PPOAgent(run / "checkpoints" / "step_0000000128.zip")
+    assert agent.action_features
+    policy = agent.model.policy
+    assert isinstance(policy, PuyoActionPolicy)
+    assert isinstance(policy.action_net, TakeFirst)
+    # 手ごとの点数がそのままロジットになっている
+    raw = solo_observation(Game(0), action_features=True)
+    obs, _ = policy.obs_to_tensor({k: v[None] for k, v in raw.items()})
+    with th.no_grad():
+        feats = policy.extract_features(obs)
+        logits = policy.get_distribution(obs).distribution.logits
+    assert logits.shape == (1, 22)
+    assert th.allclose(th.log_softmax(feats[:, :22], dim=1), logits, atol=1e-5)
+    assert len(play_solo(agent, 0, 20)["actions"]) > 0
 
 
 def test_tiny_training_run(tmp_path):

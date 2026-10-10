@@ -5,6 +5,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use puyo_core::afterstate::{ACTION_FEATURE_NAMES, NUM_ACTION_FEATURES};
 use puyo_core::field::FULL_MASK;
 use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
 use puyo_core::{
@@ -209,6 +210,19 @@ impl PyGame {
     /// `safe_actions` を長さ22の int8 配列で返す。
     fn safe_action_mask<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<i8>> {
         PyArray1::from_vec(py, mask_vec(self.inner.safe_actions()))
+    }
+
+    /// 手ごとの結果の特徴量 (22, NUM_ACTION_FEATURES) float32。列の意味は
+    /// ACTION_FEATURE_NAMES。合法でない手と終了後は0。
+    fn action_features<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        let flat: Vec<f32> = self
+            .inner
+            .action_features()
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
     }
 
     /// 潜在連鎖 (連鎖数, 得点)。どこかの列に同じ色を1〜2個足したときに起きる最大の連鎖。
@@ -481,5 +495,7 @@ fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("WIDTH", WIDTH)?;
     m.add("HEIGHT", HEIGHT)?;
     m.add("NUM_COLORS", NUM_COLORS)?;
+    m.add("NUM_ACTION_FEATURES", NUM_ACTION_FEATURES)?;
+    m.add("ACTION_FEATURE_NAMES", ACTION_FEATURE_NAMES.to_vec())?;
     Ok(())
 }

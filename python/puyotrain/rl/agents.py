@@ -13,6 +13,7 @@ from typing import Optional, Union
 import numpy as np
 
 from .._puyo import Game, Versus
+from ..envs import solo_observation
 
 State = Union[Game, Versus]
 
@@ -106,6 +107,9 @@ class PPOAgent(Agent):
     ``safe_mask`` が True なら、1人用では自滅する手(``Game.safe_actions``)を除いて選ぶ
     (対戦では合法手のまま)。None なら、チェックポイント横の .json に記録された学習時の設定
     ``env.safe_mask`` に合わせる。
+
+    モデルの観測に ``action_features`` があれば(``policy.action_features`` で学習した重み)、
+    観測に手ごとの結果の特徴量を加えて打つ。この場合は今のところ1人用のみ。
     """
 
     kind = "ppo"
@@ -127,11 +131,15 @@ class PPOAgent(Agent):
         self.deterministic = deterministic
         self.step = checkpoint_step(self.path)
         self.safe_mask = _trained_with_safe_mask(self.path) if safe_mask is None else safe_mask
+        self.action_features = "action_features" in model.observation_space.spaces
 
     def act(self, state: State, player: int = 0) -> int:
-        obs = _observation(state, player)
-        if self.safe_mask and isinstance(state, Game):
-            obs["action_mask"] = state.safe_action_mask()
+        if isinstance(state, Game):
+            obs = solo_observation(state, self.safe_mask, self.action_features)
+        elif self.action_features:
+            raise NotImplementedError("action_features models support solo games only")
+        else:
+            obs = _observation(state, player)
         mask = obs["action_mask"].astype(bool)
         action, _ = self.model.predict(obs, action_masks=mask, deterministic=self.deterministic)
         return int(action)

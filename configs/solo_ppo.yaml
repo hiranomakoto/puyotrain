@@ -32,7 +32,9 @@ policy:
   cnn_channels: [32, 64]    # 盤面 CNN(3x3 畳み込み)のチャンネル数
   features_dim: 256         # CNN 出力 + ネクスト等を結合した後の次元
   piece_planes: true        # ツモの色を盤面全体に敷き詰めた平面として CNN にも入れる
-  net_arch: [128, 128]      # 方策・価値ヘッドの隠れ層
+  net_arch: [128, 128]      # 方策・価値ヘッドの隠れ層(action_features では価値ヘッドのみ)
+  action_features: false    # 手ごとの結果(連鎖・潜在連鎖・窒息など)を観測に加え、手ごとに点数をつける方策にする
+  action_hidden: [64, 64]   # action_features の手ごとの点数づけ MLP の隠れ層
 
 checkpoint:
   every_steps: 100000       # この間隔で重みを保存(古いものは消さない)
