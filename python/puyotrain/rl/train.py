@@ -394,7 +394,21 @@ def resume(run_dir: Path, overrides: list[str] | None = None,
     return out_dir
 
 
+def _stop_on_sigterm() -> None:
+    """docker stop などの SIGTERM を Ctrl+C と同じ扱いにする(チェックポイントを保存して終わる)。"""
+    import signal
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, handler)
+    except (ValueError, OSError):  # メインスレッド以外など
+        pass
+
+
 def main(argv=None) -> None:
+    _stop_on_sigterm()
     p = argparse.ArgumentParser(description="MaskablePPO で1人プレイを学習する")
     p.add_argument("--config", type=Path, help="設定 YAML(既定: configs/solo_ppo.yaml)")
     p.add_argument("--set", dest="overrides", action="append", default=[],

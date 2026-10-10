@@ -1,0 +1,7 @@
+target
+.venv
+runs
+**/__pycache__
+*.so
+*.pyd
+.git

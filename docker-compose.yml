@@ -1,0 +1,45 @@
+# 使い方(リポジトリのルートで):
+#   docker compose build                       イメージを作る(初回のみ、数分〜十数分)
+#   docker compose run --rm train              学習を開始(既存のランがあれば再開)
+#   docker compose run --rm train bash scripts/check_env.sh   GPU 確認・テスト・速度計測
+#   docker compose up -d tensorboard           http://localhost:6006 で進捗を見る
+# GPU が無い PC では: docker compose -f docker-compose.yml -f docker-compose.cpu.yml ...
+
+x-build: &build
+  context: .
+  dockerfile: docker/Dockerfile
+  args:
+    TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+
+services:
+  train:
+    build: *build
+    image: puyotrain:latest
+    init: true                 # Ctrl+C / docker stop を学習プロセスに届ける
+    stop_grace_period: 2m      # 停止時にチェックポイントを保存する時間
+    shm_size: 2gb
+    volumes:
+      - .:/work
+      - puyo-cache:/cache
+    environment:
+      CARGO_HOME: /cache/cargo
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  tensorboard:
+    build: *build
+    image: puyotrain:latest
+    entrypoint: []
+    command: tensorboard --logdir /work/runs --host 0.0.0.0 --port 6006
+    volumes:
+      - .:/work
+    ports:
+      - "6006:6006"
+
+volumes:
+  puyo-cache:

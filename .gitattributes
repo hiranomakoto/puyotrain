@@ -1,0 +1,3 @@
+# シェルスクリプトは Windows で clone しても LF のまま(Docker / WSL で実行するため)
+*.sh text eol=lf
+docker/** text eol=lf

@@ -66,3 +66,34 @@ jobs:
           if ($zips.Count -lt 4) { throw "expected >= 4 checkpoints, got $($zips.Count)" }
           if (-not (Test-Path runs\ci\resume_history.jsonl)) { throw "resume was not recorded" }
           if (@(Get-ChildItem runs\ci\videos\step_*.mp4).Count -lt 1) { throw "no videos" }
+
+  docker-training-smoke:
+    # docker compose での学習(GPU なしのランナーなので CPU 版 torch・CPU 用の上書き設定)
+    runs-on: ubuntu-latest
+    env:
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+      COMPOSE: docker compose -f docker-compose.yml -f docker-compose.cpu.yml
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: $COMPOSE build train
+      - name: check_env.sh (tests)
+        run: $COMPOSE run --rm train bash scripts/check_env.sh --skip-bench
+      - name: start_training.sh (new run)
+        run: >
+          $COMPOSE run --rm train bash scripts/start_training.sh --run-name ci --total-steps 2048
+          --n-envs 4 --checkpoint-every 1024 --video-every 1
+          --set eval.seeds.count=3 --set eval.max_steps=30 --set "video.seeds=[0]"
+          --set video.max_moves=20 --set ppo.n_steps=128 --set ppo.batch_size=128
+      - name: start_training.sh (resume)
+        run: >
+          $COMPOSE run --rm train bash scripts/start_training.sh --run-name ci --total-steps 4096
+          --n-envs 4 --checkpoint-every 1024 --video-every 1
+          --set eval.seeds.count=3 --set eval.max_steps=30 --set "video.seeds=[0]"
+          --set video.max_moves=20 --set ppo.n_steps=128 --set ppo.batch_size=128
+      - name: Check outputs
+        run: |
+          ls -la runs/ci/checkpoints runs/ci/videos
+          test "$(ls runs/ci/checkpoints/step_*.zip | wc -l)" -ge 4
+          test -f runs/ci/resume_history.jsonl
+          ls runs/ci/videos/step_*.mp4

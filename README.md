@@ -9,7 +9,8 @@
 | `python/puyotrain/` | `PuyoSoloEnv` / `PuyoVersusEnv` |
 | `python/puyotrain/rl/` | 1人プレイの学習基盤(ベースライン、MaskablePPO、リプレイ、動画) |
 | `configs/solo_ppo.yaml` | 学習設定(1ファイルに集約) |
-| `scripts/` | `train.py` / `replay.py` / `render.py` / `render_all.py` / `baseline.py` / `bench_train.py` |
+| `scripts/` | `train.py` / `replay.py` / `render.py` / `render_all.py` / `baseline.py` / `bench_train.py`、起動用の `start_training.sh` / `check_env.sh` / `*.ps1` |
+| `docker/`, `docker-compose.yml` | Docker で学習するためのイメージと設定 |
 | `python/tests/` | pytest |
 
 ルール定数は `puyo-core/src/rules.rs` に集約しています。
@@ -249,9 +250,48 @@ TensorBoard に記録する指標:
 | `eval/mean_moves`, `eval/death_rate` | 平均手数・窒息率 |
 | `rollout/ep_score_mean`, `rollout/ep_max_chain_mean` | 学習中のエピソードの得点・最大連鎖 |
 
-### Windows で学習を始める(まとめ)
+### Docker で学習する(Windows ではこちらを推奨)
 
-前提: Git、Rust(rustup)、Visual Studio Build Tools(C++)、Python 3.12。無いものは
+Docker Desktop(WSL2 バックエンド)の Linux コンテナ内でビルドと学習を行います。
+Windows 側に Rust や Python を入れる必要がなく、Windows 11 の「スマート アプリ コントロール」に
+ビルドを止められることもありません。リポジトリのフォルダをそのままコンテナにマウントするので、
+チェックポイントや動画はエクスプローラーから見られます。
+
+前提: Docker Desktop(Settings → General の「Use the WSL 2 based engine」がオン)と、
+GPU を使う場合は Windows 側の NVIDIA ドライバ(WSL 用の追加インストールは不要)。
+
+```powershell
+cd C:\Users\<ユーザー名>\dev\puyotrain
+git pull
+docker compose build                                         # 初回のみ。数分〜十数分
+docker compose run --rm train bash scripts/check_env.sh      # GPU 確認・テスト・速度計測
+docker compose run --rm train                                # 学習開始(2回目以降は自動で再開)
+docker compose up -d tensorboard                             # http://localhost:6006
+```
+
+- `docker compose run --rm train` は `scripts/start_training.sh` を実行し、`runs/solo_main` に学習します。
+  オプションは後ろに付けます:
+  `docker compose run --rm train bash scripts/start_training.sh --device cuda --n-envs 16 --total-steps 100000000`
+- **止め方**: Ctrl+C(バックグラウンドで動かしている場合は `docker stop <コンテナ名>`)。
+  どちらでもその時点の重みを保存してから終了し、同じコマンドで再開できます。
+- 長時間回すときは `docker compose run -d --name puyo-train train` でバックグラウンド実行し、
+  `docker logs -f puyo-train` でログを見られます(止めるときは `docker stop puyo-train`、
+  その後 `docker rm puyo-train`)。
+- **PyTorch の CUDA 版**: 既定は CUDA 12.8 版(`cu128`)です。GPU ドライバが新しければ
+  `$env:TORCH_INDEX_URL="https://download.pytorch.org/whl/cu130"; docker compose build`、
+  `check_env.sh` で `CUDA available: False` になる場合は `cu126` で作り直してください。
+- コードを更新したら `git pull` するだけです(起動時に Rust 拡張を差分ビルドします)。
+  依存パッケージを変えたときだけ `docker compose build` し直します。
+- GPU の無い PC では `docker compose -f docker-compose.yml -f docker-compose.cpu.yml run --rm train` のように
+  CPU 用の設定を重ねます。
+
+### Windows に直接環境を作る(スマート アプリ コントロールがオフの場合)
+
+Windows 11 の「スマート アプリ コントロール」がオンだと、Rust のビルド中に作られる実行ファイルが
+ブロックされます(`os error 4551`)。その場合は上の Docker を使ってください。
+オフの PC では、次のスクリプトで Windows 上に直接環境を作れます。
+
+前提: Git、Rust(rustup)、Visual Studio Build Tools(C++)、Python 3.10〜3.13。無いものは
 セットアップスクリプトが `winget` のインストールコマンドを表示します。
 
 ```powershell
@@ -263,13 +303,12 @@ powershell -ExecutionPolicy Bypass -File scripts\start_training.ps1    # 学習�
 .venv\Scripts\tensorboard.exe --logdir runs                            # 別のターミナルで進捗を見る
 ```
 
-- `setup_windows.ps1` は、NVIDIA GPU があれば PyTorch の CUDA 版を入れ、GPU が使えることを確認します
-  (使えなければ CPU 版に切り替えて警告)。最後に CPU / GPU と並列数 8 / 16 の学習速度を表示します。
-  何度実行しても大丈夫です(既存の `.venv` を再利用)。
-- `start_training.ps1` は `runs\solo_main` に学習します。止めた後に同じコマンドを実行すると最新の
-  チェックポイントから再開します。主なオプション: `-Device cuda`、`-NEnvs 16`、`-TotalSteps 100000000`、
+- `setup_windows.ps1` は、NVIDIA GPU があれば PyTorch の CUDA 版を新しい順(cu130 → cu128 → cu126)に試し、
+  GPU が使えることを確認します(どれも使えなければ CPU 版に切り替えて警告)。
+- `start_training.ps1` のオプション: `-Device cuda`、`-NEnvs 16`、`-TotalSteps 100000000`、
   `-RunName 名前`、`-Set "ppo.learning_rate=0.0001"`。
-- PowerShell の実行ポリシーでスクリプトが止められないよう、`-ExecutionPolicy Bypass` を付けて実行します。
+- Linux / WSL に直接入れる場合は、README 冒頭の「ビルド」の手順のあと
+  `bash scripts/check_env.sh` と `bash scripts/start_training.sh` が使えます。
 
 ### 長時間の学習と再開
 

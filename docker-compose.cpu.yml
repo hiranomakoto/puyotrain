@@ -1,0 +1,4 @@
+# GPU の無い PC 用: docker compose -f docker-compose.yml -f docker-compose.cpu.yml run --rm train
+services:
+  train:
+    deploy: !reset {}
