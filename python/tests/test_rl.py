@@ -204,6 +204,33 @@ def test_safe_mask_from_action_features_matches_game():
     assert narrowed > 0
 
 
+def test_versus_observation_options():
+    from puyotrain import _puyo
+    from puyotrain.envs import versus_observation
+
+    rng = np.random.default_rng(6)
+    v = Versus(8)
+    while not v.is_over and v.turn < 200:
+        for p in (0, 1):
+            obs = versus_observation(v, p, safe_mask=True, action_features=True)
+            assert obs["action_features"].shape == (22, _puyo.NUM_ACTION_FEATURES)
+            np.testing.assert_array_equal(obs["action_mask"], v.safe_action_mask(p))
+            np.testing.assert_array_equal(obs["board"], v.observation(p)["board"])
+        acts = [int(rng.choice(np.flatnonzero(v.action_mask(p)))) for p in (0, 1)]
+        v.step(*acts)
+    assert v.potential_chain(0)[0] >= 0
+
+
+def test_match_greedy_beats_random():
+    from puyotrain.rl.match import play_match
+
+    r = play_match(GreedyAgent(0), RandomAgent(1), [0, 1, 2], 300)
+    assert r["games"] == 6
+    assert r["wins"] + r["losses"] + r["draws"] + r["timeouts"] == 6
+    assert r["wins"] >= 5
+    assert {g["swapped"] for g in r["per_game"]} == {False, True}
+
+
 def test_ppo_agent_reads_safe_mask_from_checkpoint_record(tmp_path):
     from puyotrain.rl.agents import _trained_with_safe_mask
 
@@ -335,6 +362,8 @@ def test_tiny_training_run_with_action_features(tmp_path):
     assert logits.shape == (1, 22)
     assert th.allclose(th.log_softmax(feats[:, :22], dim=1), logits, atol=1e-5)
     assert len(play_solo(agent, 0, 20)["actions"]) > 0
+    # 対戦でも打てる
+    assert record_versus((agent, RandomAgent(1)), 0, 20)["meta"]["moves"] > 0
 
 
 def test_tiny_training_run(tmp_path):

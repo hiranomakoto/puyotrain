@@ -103,6 +103,34 @@ impl Versus {
         crate::bot::greedy_action(&self.players[i].field, [self.pair(0), self.pair(1)], rng)
     }
 
+    /// プレイヤー `i` の自滅しない手のマスク([`crate::bot::safe_actions`])。終了後は0。
+    /// 予告おじゃまの降下は考えない。
+    pub fn safe_actions(&self, i: usize) -> ActionMask {
+        if self.is_over() {
+            0
+        } else {
+            crate::bot::safe_actions(&self.players[i].field, [self.pair(0), self.pair(1)])
+        }
+    }
+
+    /// プレイヤー `i` の手ごとの結果の特徴量([`crate::afterstate::action_features`])。
+    /// 予告おじゃまの降下は考えない。終了後は全部0。
+    pub fn action_features(
+        &self,
+        i: usize,
+    ) -> [[f32; crate::afterstate::NUM_ACTION_FEATURES]; crate::rules::NUM_ACTIONS] {
+        if self.is_over() {
+            [[0.0; crate::afterstate::NUM_ACTION_FEATURES]; crate::rules::NUM_ACTIONS]
+        } else {
+            crate::afterstate::action_features(&self.players[i].field, [self.pair(0), self.pair(1)])
+        }
+    }
+
+    /// プレイヤー `i` の盤面の潜在連鎖([`crate::potential::potential_chain`])。
+    pub fn potential_chain(&self, i: usize) -> crate::potential::Potential {
+        crate::potential::potential_chain(&self.players[i].field)
+    }
+
     /// プレイヤー `i` の合法手マスク(終了後は0)。
     pub fn legal_actions(&self, i: usize) -> ActionMask {
         if self.is_over() {

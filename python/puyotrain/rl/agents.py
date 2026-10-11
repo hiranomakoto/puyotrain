@@ -13,17 +13,13 @@ from typing import Optional, Union
 import numpy as np
 
 from .._puyo import Game, Versus
-from ..envs import solo_observation
+from ..envs import solo_observation, versus_observation
 
 State = Union[Game, Versus]
 
 
 def _mask(state: State, player: int) -> int:
     return state.legal_actions() if isinstance(state, Game) else state.legal_actions(player)
-
-
-def _observation(state: State, player: int) -> dict:
-    return state.observation() if isinstance(state, Game) else state.observation(player)
 
 
 class Agent:
@@ -104,12 +100,13 @@ class PPOAgent(Agent):
     ``PPOAgent(path)`` でチェックポイントを読み込む。学習中のモデルを直接使うときは
     ``PPOAgent(path, model=model)``(ファイルは読まない)。
 
-    ``safe_mask`` が True なら、1人用では自滅する手(``Game.safe_actions``)を除いて選ぶ
-    (対戦では合法手のまま)。None なら、チェックポイント横の .json に記録された学習時の設定
-    ``env.safe_mask`` に合わせる。
+    ``safe_mask`` が True なら、自滅する手(``safe_actions``)を除いて選ぶ。None なら、
+    チェックポイント横の .json に記録された学習時の設定 ``env.safe_mask`` に合わせる。
 
     モデルの観測に ``action_features`` があれば(``policy.action_features`` で学習した重み)、
-    観測に手ごとの結果の特徴量を加えて打つ。この場合は今のところ1人用のみ。
+    観測に手ごとの結果の特徴量を加えて打つ。
+
+    対戦では、自滅判定と特徴量は予告おじゃまの降下を考えない(1人用で学習した重みと同じ入力)。
     """
 
     kind = "ppo"
@@ -136,10 +133,8 @@ class PPOAgent(Agent):
     def act(self, state: State, player: int = 0) -> int:
         if isinstance(state, Game):
             obs = solo_observation(state, self.safe_mask, self.action_features)
-        elif self.action_features:
-            raise NotImplementedError("action_features models support solo games only")
         else:
-            obs = _observation(state, player)
+            obs = versus_observation(state, player, self.safe_mask, self.action_features)
         mask = obs["action_mask"].astype(bool)
         action, _ = self.model.predict(obs, action_masks=mask, deterministic=self.deterministic)
         return int(action)

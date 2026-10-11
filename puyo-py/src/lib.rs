@@ -415,6 +415,50 @@ impl PyVersus {
             .collect()
     }
 
+    /// プレイヤー `player` の自滅しない手のビットマスク(int)。予告おじゃまの降下は考えない。
+    fn safe_actions(&self, player: usize) -> PyResult<u32> {
+        check_player(player)?;
+        Ok(self.inner.safe_actions(player))
+    }
+
+    /// `safe_actions` を長さ22の int8 配列で返す。
+    fn safe_action_mask<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<i8>>> {
+        check_player(player)?;
+        Ok(PyArray1::from_vec(
+            py,
+            mask_vec(self.inner.safe_actions(player)),
+        ))
+    }
+
+    /// プレイヤー `player` の手ごとの結果の特徴量 (22, NUM_ACTION_FEATURES) float32。
+    /// 予告おじゃまの降下は考えない。
+    fn action_features<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        check_player(player)?;
+        let flat: Vec<f32> = self
+            .inner
+            .action_features(player)
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
+    }
+
+    /// プレイヤー `player` の潜在連鎖 (連鎖数, 得点)。
+    fn potential_chain(&self, player: usize) -> PyResult<(u32, u32)> {
+        check_player(player)?;
+        let p = self.inner.potential_chain(player);
+        Ok((p.chains, p.score))
+    }
+
     /// 予告おじゃま数 [P0, P1]。
     fn pending_ojama(&self) -> (u32, u32) {
         (self.inner.player(0).pending, self.inner.player(1).pending)

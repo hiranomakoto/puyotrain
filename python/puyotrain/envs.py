@@ -13,21 +13,34 @@ from .spaces import action_space, observation_space
 _SEED_HIGH = 2**63
 
 
-def solo_observation(game: Game, safe_mask: bool = False, action_features: bool = False) -> dict:
-    """1人用の観測。``safe_mask`` なら行動マスクを自滅しない手に絞り、
-    ``action_features`` なら手ごとの結果の特徴量を加える(``PuyoSoloEnv`` と同じ形)。"""
-    obs = game.observation()
+def _with_options(obs: dict, features, safe_action_mask, safe_mask: bool,
+                  action_features: bool) -> dict:
     if action_features:
-        feats = game.action_features()
+        feats = features()
         obs["action_features"] = feats
         if safe_mask:
-            # 特徴量の legal・dead・survivable から作る(Game.safe_action_mask と同じ結果)
+            # 特徴量の legal・dead・survivable から作る(safe_action_mask と同じ結果)
             safe = (feats[:, 0] > 0) & (feats[:, 1] == 0) & (feats[:, 10] > 0)
             if safe.any():
                 obs["action_mask"] = safe.astype(np.int8)
     elif safe_mask:
-        obs["action_mask"] = game.safe_action_mask()
+        obs["action_mask"] = safe_action_mask()
     return obs
+
+
+def solo_observation(game: Game, safe_mask: bool = False, action_features: bool = False) -> dict:
+    """1人用の観測。``safe_mask`` なら行動マスクを自滅しない手に絞り、
+    ``action_features`` なら手ごとの結果の特徴量を加える(``PuyoSoloEnv`` と同じ形)。"""
+    return _with_options(game.observation(), game.action_features, game.safe_action_mask,
+                         safe_mask, action_features)
+
+
+def versus_observation(v: Versus, player: int, safe_mask: bool = False,
+                       action_features: bool = False) -> dict:
+    """対戦のプレイヤー ``player`` 視点の観測。オプションは ``solo_observation`` と同じ
+    (自滅判定と特徴量は予告おじゃまの降下を考えない)。"""
+    return _with_options(v.observation(player), lambda: v.action_features(player),
+                         lambda: v.safe_action_mask(player), safe_mask, action_features)
 
 
 class PuyoSoloEnv(gym.Env):
