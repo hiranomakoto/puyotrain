@@ -21,6 +21,29 @@ from .selfplay import OpponentPool, StackedActors, VersusVecEnv
 _SEED_HIGH = 2**63
 
 
+class _TimedCalls:
+    """``TimedBatch`` の呼び出しを、環境の内訳としてプロファイラに記録する。
+
+    プロファイラが付いていなければ(``env.timer`` が None)、そのまま呼ぶ。
+    区分: observe(観測・特徴量の計算)、advance(手の決定と時刻の進行)、greedy(greedy の手)。
+    """
+
+    SECTIONS = {"observe": "env.observe", "act": "env.advance", "advance": "env.advance",
+                "greedy": "env.greedy"}
+
+    def __init__(self, env: "TimedVersusVecEnv", batch: TimedBatch):
+        self._env = env
+        self._batch = batch
+
+    def __getattr__(self, name: str):
+        fn = getattr(self._batch, name)
+        section = self.SECTIONS.get(name)
+        timer = self._env.timer
+        if section is None or timer is None:
+            return fn
+        return timer.wrap(fn, section)
+
+
 class TimedVersusVecEnv(VersusVecEnv):
     """時間のモデルの自己対戦環境。
 
@@ -41,7 +64,7 @@ class TimedVersusVecEnv(VersusVecEnv):
                  start_step: int = 0, timing: Optional[dict] = None):
         self.render_mode = None  # VecEnv.__init__ が読む
         VecEnv.__init__(self, n_envs, observation_space(timed=True), action_space())
-        self.batch = TimedBatch(n_envs, timing)
+        self.batch = _TimedCalls(self, TimedBatch(n_envs, timing))
         self.pool = pool
         self.safe_mask = safe_mask
         self.attack_coef = attack_coef

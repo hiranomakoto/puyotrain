@@ -551,6 +551,9 @@ docker compose run --rm train python scripts/train_versus.py --run-dir runs/vers
 | checkpoint | 保存・評価・動画 |
 | other | 残り |
 
+- 時間のモデルの学習では、env の内訳も出す(`env: observe=… advance=… greedy=… py=…`。
+  observe = Rust での観測・特徴量の計算、advance = 手の決定と時刻の進行、greedy = greedy の手、
+  py = 残りの Python 側の処理。TensorBoard は `perf/frac_env_*`)。
 - steps/sec = 環境ステップ数 ÷ 経過時間、samples/sec = 更新で処理したサンプル数(バッファ × n_epochs)÷ update 時間。
 - 計測区間の終わりで `torch.cuda.synchronize()` を呼ぶので、計測しないときより少し遅くなる。
   TensorBoard には `perf/*` で記録する。

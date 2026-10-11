@@ -2,7 +2,10 @@
 
 1イテレーション(ロールアウト収集 + ネットワーク更新)ごとに、所要時間を次の区分に分けて測る。
 
-- env: 環境シミュレーション(Rust の対局進行、特徴量の計算、greedy の相手、観測の組み立て)
+- env: 環境シミュレーション(Rust の対局進行、特徴量の計算、greedy の相手、観測の組み立て)。
+  環境が内訳(``env.<名前>`` の区分)を記録していれば、env の中の割合も出す
+  (時間のモデルの環境: observe = 観測・特徴量、advance = 手の決定と時刻の進行、greedy = greedy の手、
+  py = 残りの Python 側の処理)
 - opp_infer: 相手の推論(自己対戦で、相手が PPO の重みのとき)
 - infer: 学習側の推論(ロールアウト中の方策・価値の順伝播)
 - transfer: CPU → GPU の転送(ロールアウト中の観測、更新時のミニバッチ)
@@ -140,6 +143,7 @@ def attach_profiler(model, env, every: int = 10):
             self.acc: dict[str, float] = defaultdict(float)
             self.iters = 0
             self.steps = 0
+            self.env_parts: dict[str, float] = defaultdict(float)
 
         def watch_checkpointer(self, cb) -> None:
             if hasattr(cb, "checkpoint"):
@@ -169,6 +173,11 @@ def attach_profiler(model, env, every: int = 10):
             parts["other"] = max(0.0, wall - sum(parts.values()))
             for k, v in parts.items():
                 self.acc[k] += v
+            inner = {k[4:]: v for k, v in t.items() if k.startswith("env.")}
+            if inner:
+                inner["py"] = max(0.0, env_t - sum(inner.values()))
+                for k, v in inner.items():
+                    self.env_parts[k] += v
             self.acc["wall"] += wall
             self.acc["update_time"] += update
             self.iters += 1
@@ -194,9 +203,16 @@ def attach_profiler(model, env, every: int = 10):
                 self.logger.record("perf/gpu_peak_mib", peak)
                 mem = f"  gpu_peak={peak:.0f}MiB"
             fracs = " ".join(f"{k}={100 * self.acc[k] / wall:.1f}%" for k in SECTIONS)
+            inner = ""
+            if self.env_parts:
+                for k, v in self.env_parts.items():
+                    self.logger.record(f"perf/frac_env_{k}", v / wall)
+                inner = "  env: " + " ".join(f"{k}={100 * v / wall:.1f}%"
+                                             for k, v in self.env_parts.items())
             print(f"[profile] {self.iters} iters {wall:.1f}s  steps/s={sps:.0f} "
-                  f"samples/s={sample_rate:.0f}  {fracs}{mem}", flush=True)
+                  f"samples/s={sample_rate:.0f}  {fracs}{mem}{inner}", flush=True)
             self.acc.clear()
+            self.env_parts.clear()
             self.iters = 0
             self.steps = 0
 

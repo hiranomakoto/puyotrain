@@ -196,6 +196,9 @@ def test_tiny_timed_training_and_resume(tmp_path, versus_ckpt, capsys):
         agent.observe(_puyo.Versus(0), 0)
     out = capsys.readouterr().out
     assert "[profile] 1 iters" in out
+    line = next(x for x in out.splitlines() if x.startswith("[profile] 1 iters"))
+    for part in ("env: ", "observe=", "advance=", "greedy=", "py="):
+        assert part in line
     resume(run, ["ppo.total_timesteps=384"])
     assert (run / "checkpoints" / "step_0000000384.zip").exists()
 
