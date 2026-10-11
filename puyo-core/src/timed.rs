@@ -77,6 +77,22 @@ impl Timing {
         self.chigiri_fall[rows.clamp(1, 12) - 1]
     }
 
+    /// ちぎれたぷよが自由落下を始めてから `elapsed` フレームで落ちた段数(描画用。最大 `gap` 段)。
+    /// `chigiri_fall` の表(n 段落ちるのにかかる時間)を逆に引き、表の間は直線で補う。
+    /// 表の間隔がだんだん短くなるので、落ちるほど速くなる。
+    pub fn free_fall_rows(&self, elapsed: u64, gap: usize) -> f32 {
+        let gap = gap.min(12);
+        let mut prev = 0u64;
+        for n in 1..=gap {
+            let t = self.chigiri_fall[n - 1] as u64;
+            if elapsed < t {
+                return (n - 1) as f32 + (elapsed - prev) as f32 / (t - prev).max(1) as f32;
+            }
+            prev = t;
+        }
+        gap as f32
+    }
+
     /// 組ぷよを置くのにかかる時間(置く前の盤面から)。
     pub fn place_frames(&self, field: &Field, action: Action) -> u32 {
         let h = field.heights();
@@ -473,8 +489,10 @@ impl TimedVersus {
     /// 描画用: プレイヤー `i` の今の見た目。
     ///
     /// - 連鎖1つの消去の演出中(開始から `vanish` フレームの間)は、消える前の盤面と消えるセル。
-    /// - 設置中は、落下中の組ぷよ2個の (段(小数), 列, 色)。出現位置から着地位置まで、
-    ///   出現と接地の時間を除いた区間で一定の速さで落ちるとみなす。
+    /// - 設置中は、落下中の組ぷよ2個の (段(小数), 列, 色)。設置時間の式と同じ区切りで動かす:
+    ///   出現位置で止まる(`spawn`)→ 2個一緒に一定の速さで落ちる(`drop_per_row` × 段数)→
+    ///   先に着地した側が接地する(`landing`)→ ちぎりなら低い側だけが自由落下する
+    ///   (`chigiri_fall` の表に沿って加速。[`Timing::free_fall_rows`])→ 接地。
     pub fn display(&self, i: usize) -> Display {
         let p = &self.players[i];
         let mut d = Display {
@@ -491,41 +509,42 @@ impl TimedVersus {
                     d.cleared = p.link_cleared;
                 }
             }
-            Phase::Placing {
-                since,
-                until,
-                action,
-            } => {
+            Phase::Placing { since, action, .. } => {
                 let pair = self.pair(i, 0);
                 let h = p.state.field.heights();
                 let (a, c) = (action.axis_col(), action.child_col());
-                // (開始段, 着地段, 列, 色)
-                let cells = match action.rotation() {
-                    crate::action::Rotation::Up => [
-                        (SPAWN_ROW, h[a], a, pair.axis),
-                        (SPAWN_ROW + 1, h[a] + 1, a, pair.child),
-                    ],
-                    crate::action::Rotation::Down => [
-                        (SPAWN_ROW + 1, h[a] + 1, a, pair.axis),
-                        (SPAWN_ROW, h[a], a, pair.child),
-                    ],
-                    _ => [
-                        (SPAWN_ROW, h[a], a, pair.axis),
-                        (SPAWN_ROW, h[c], c, pair.child),
-                    ],
+                let t = &self.timing;
+                // 設置時間の式と同じ区切り: 出現 → 操作による落下(2個一緒) → 接地 →
+                // (ちぎりなら)低い側だけ自由落下 → 接地
+                let first = if a == c { h[a] } else { h[a].max(h[c]) };
+                let drop_rows = SPAWN_ROW.saturating_sub(first);
+                let elapsed = self.now.saturating_sub(since + t.spawn as u64);
+                let fallen = (elapsed as f32 / t.drop_per_row.max(1) as f32).min(drop_rows as f32);
+                let base = SPAWN_ROW as f32 - fallen; // 2個一緒に落ちている間の下側の段
+                                                      // ちぎれて自由落下する時間(先に着地した側の接地が終わってから)
+                let free = elapsed
+                    .saturating_sub((t.drop_per_row as usize * drop_rows) as u64)
+                    .saturating_sub(t.landing as u64);
+                d.falling = match action.rotation() {
+                    crate::action::Rotation::Up => {
+                        vec![(base, a, pair.axis), (base + 1.0, a, pair.child)]
+                    }
+                    crate::action::Rotation::Down => {
+                        vec![(base + 1.0, a, pair.axis), (base, a, pair.child)]
+                    }
+                    _ => [(a, pair.axis), (c, pair.child)]
+                        .iter()
+                        .map(|&(col, color)| {
+                            let gap = first - h[col]; // 先に着地する側は0
+                            let row = if gap == 0 {
+                                base
+                            } else {
+                                base - t.free_fall_rows(free, gap)
+                            };
+                            (row, col, color)
+                        })
+                        .collect(),
                 };
-                let begin = since + self.timing.spawn as u64;
-                let end = until
-                    .saturating_sub(self.timing.landing as u64)
-                    .max(begin + 1);
-                let f = (self.now.saturating_sub(begin) as f32 / (end - begin) as f32).min(1.0);
-                d.falling = cells
-                    .iter()
-                    .map(|&(from, to, col, color)| {
-                        let to = to.min(from);
-                        (from as f32 - (from - to) as f32 * f, col, color)
-                    })
-                    .collect();
             }
             _ => {}
         }
@@ -693,6 +712,63 @@ mod tests {
         let d = g.display(0);
         assert_eq!(d.cleared, 0);
         assert_eq!(d.field, g.player(0).state.field);
+    }
+
+    /// P0 の表示を時刻 `t` で取る(途中で操作待ちになる P1 は列5に置き続ける)。
+    fn display_at(g: &mut TimedVersus, t: u64) -> Display {
+        while g.now() < t {
+            if g.needs_action()[1] {
+                g.act(1, up(5)).unwrap();
+            }
+            g.advance_until(t);
+        }
+        g.display(0)
+    }
+
+    #[test]
+    fn chigiri_drops_together_then_the_lower_side_falls_alone() {
+        let mut g = TimedVersus::new(13);
+        // 列0の高さ4、列1の高さ0。右向きの横置きは列0(軸)が先に着地し、子が4段ちぎれる
+        g.player_mut(0).state.field =
+            Field::from_rows(&["R.....", "G.....", "B.....", "Y....."]).unwrap();
+        g.act(0, right(0)).unwrap();
+        let rows = |d: &Display| (d.falling[0].0, d.falling[1].0);
+        // 出現中(12F)は出現位置
+        assert_eq!(rows(&display_at(&mut g, 5)), (11.0, 11.0));
+        // 操作による落下: 2個一緒に 2F/段(18F で3段)
+        assert_eq!(rows(&display_at(&mut g, 18)), (8.0, 8.0));
+        // 26F で軸が着地(段4)。接地の20F の間、子はまだくっついている
+        assert_eq!(rows(&display_at(&mut g, 26)), (4.0, 4.0));
+        assert_eq!(rows(&display_at(&mut g, 45)), (4.0, 4.0));
+        // 46F から子だけが自由落下: 10F で1段、22F で4段(表どおり加速)
+        assert_eq!(rows(&display_at(&mut g, 56)), (4.0, 3.0));
+        let d = display_at(&mut g, 58); // 12F 後: 1段(10F)と2段(15F)の間
+        assert!(d.falling[1].0 < 3.0 && d.falling[1].0 > 2.0);
+        assert_eq!(rows(&display_at(&mut g, 68)), (4.0, 0.0));
+        // 子の接地(20F)が終わる 88F に着地する(設置時間 = 46 + 22 + 20)
+        assert_eq!(display_at(&mut g, 87).falling.len(), 2);
+        assert!(display_at(&mut g, 88).falling.is_empty());
+    }
+
+    #[test]
+    fn vertical_drop_moves_both_together() {
+        let mut g = TimedVersus::new(13);
+        g.act(0, up(0)).unwrap();
+        // 空の列: 軸が下(段11 → 0)、子が上(段12 → 1)。12F 後から 2F/段
+        let d = display_at(&mut g, 12 + 2 * 5);
+        assert_eq!((d.falling[0].0, d.falling[1].0), (6.0, 7.0));
+        let d = display_at(&mut g, 12 + 22);
+        assert_eq!((d.falling[0].0, d.falling[1].0), (0.0, 1.0));
+    }
+
+    #[test]
+    fn free_fall_follows_the_table() {
+        let t = Timing::default();
+        assert_eq!(t.free_fall_rows(0, 3), 0.0);
+        assert_eq!(t.free_fall_rows(10, 3), 1.0);
+        assert_eq!(t.free_fall_rows(15, 3), 2.0);
+        assert_eq!(t.free_fall_rows(17, 3), 2.5);
+        assert_eq!(t.free_fall_rows(100, 3), 3.0);
     }
 
     #[test]
