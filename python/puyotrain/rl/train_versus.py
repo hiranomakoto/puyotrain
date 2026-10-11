@@ -27,12 +27,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .._puyo import NUM_ACTION_FEATURES
 from .agents import Agent, GreedyAgent, PPOAgent, checkpoint_step
 from .config import config_hash, eval_seeds, load_config
 from .match import play_match
 from .render import render_replay
-from .replay import record_versus, save_replay
+from .replay import record_timed, record_versus, save_replay
 from .selfplay import OpponentPool, VersusVecEnv
 from .train import (
     _learn,
@@ -193,7 +192,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
     snap_every = int(cfg["pool"]["snapshot_every"])
     chash = config_hash(cfg)
     opponents = {opponent_label(s): eval_opponent(s, cfg, device) for s in cfg["eval"]["opponents"]}
-    timed = is_timed(cfg)  # 時間のモデルでは評価も時間のモデルで打つ(動画は未対応)
+    timed = is_timed(cfg)  # 時間のモデルでは評価・動画も時間のモデルで打つ
 
     class Checkpointer(BaseCallback):
         """一定ステップごとに保存・評価・動画。過去の自分をプールに加える。勝率を TensorBoard に出す。"""
@@ -233,7 +232,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
         def _on_training_end(self) -> None:
             if self.last_saved != self.model.num_timesteps:
                 self.checkpoint(final=True)
-            elif not self.last_had_videos and cfg["video"]["enabled"] and not timed:
+            elif not self.last_had_videos and cfg["video"]["enabled"]:
                 # 最後のチェックポイントが間引きで動画なしだった場合も、終了時の重みの動画は作る
                 name = f"step_{self.last_saved:010d}"
                 ckpt = run_dir / "checkpoints" / f"{name}.zip"
@@ -249,8 +248,12 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
             videos = []
             for s in cfg["video"]["seeds"]:
                 for agents, tag in (((me, greedy), "p1"), ((greedy, me), "p2")):
-                    rep = record_versus(agents, s, int(cfg["video"]["max_moves"]),
-                                        extra_meta={"run": run_dir.name})
+                    if timed:
+                        rep = record_timed(agents, s, cfg.get("timing") or None,
+                                           extra_meta={"run": run_dir.name})
+                    else:
+                        rep = record_versus(agents, s, int(cfg["video"]["max_moves"]),
+                                            extra_meta={"run": run_dir.name})
                     stem = f"{name}_vs_greedy_{tag}_seed{s}"
                     save_replay(rep, run_dir / "replays" / f"{stem}.json")
                     videos.append(render_replay(rep, run_dir / "videos" / f"{stem}.mp4",
@@ -285,7 +288,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
 
             video_every = max(1, int(cfg["video"].get("every_checkpoints", 1)))
             videos = []
-            if (cfg["video"]["enabled"] and videos_enabled and not timed
+            if (cfg["video"]["enabled"] and videos_enabled
                     and (final or (step // every) % video_every == 0)):
                 videos = self.write_videos(me, name)
             self.last_had_videos = bool(videos)

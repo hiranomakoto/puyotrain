@@ -25,4 +25,6 @@ eval:
     - runs/solo_afterstate_b/checkpoints/step_0019000000.zip   # 1人プレイの完成版
 
 video:
-  enabled: false            # 時間のモデルの動画は未対応
+  enabled: true             # greedy との対局を左右入れ替えて録画する(時刻に沿って実時間で描く)
+  every_checkpoints: 4
+  timed_speed: 1.0          # 1 = 実時間。2 なら2倍速

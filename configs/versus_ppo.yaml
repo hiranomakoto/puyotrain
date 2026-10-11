@@ -64,6 +64,7 @@ video:
   frames_per_move: 4
   frames_per_chain_stage: 8
   end_hold_frames: 45
+  timed_speed: 1.0          # 時間のモデルの動画の速さ(1 = 実時間)
 
 profile:
   enabled: true            # 学習ループの所要時間を区分ごとに測ってログに出す(perf/* と標準出力)

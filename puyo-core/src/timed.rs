@@ -126,13 +126,29 @@ impl Timing {
     }
 }
 
+/// 描画用の見た目([`TimedVersus::display`])。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Display {
+    pub field: Field,
+    /// 消去の演出中に消えるセル(ビットボード)。
+    pub cleared: u128,
+    /// 連鎖中なら何連鎖目か(連鎖中でなければ0)。
+    pub chain: u32,
+    /// 落下中の組ぷよ (段(小数、0 = 1段目), 列, 色)。
+    pub falling: Vec<(f32, usize, crate::color::Puyo)>,
+}
+
 /// プレイヤーの状態。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Phase {
     /// 操作待ち(手を決める)。
     Ready,
-    /// 設置中。`until` に着地する。
-    Placing { until: u64, action: Action },
+    /// 設置中。`since` に手を決め、`until` に着地する。
+    Placing {
+        since: u64,
+        until: u64,
+        action: Action,
+    },
     /// 連鎖中。`chain` 連鎖目を解決済みで、`until` に次の連鎖の判定をする。
     Chaining { until: u64, chain: u32 },
     /// おじゃま落下中。`until` に落下を終える。
@@ -157,6 +173,10 @@ pub struct TimedPlayer {
     pub max_chain: u32,
     /// この対局で連鎖が生んだおじゃまの合計(相殺に使った分も含む)。
     pub attack_total: u64,
+    /// 直前の連鎖1つの開始時刻・消える前の盤面・消えたセル(描画用)。
+    pub link_start: u64,
+    pub link_before: Field,
+    pub link_cleared: u128,
     /// この手で始まった連鎖の攻撃に全消しボーナスを乗せたか。
     bonus_used: bool,
 }
@@ -171,6 +191,9 @@ impl TimedPlayer {
             moves: 0,
             max_chain: 0,
             attack_total: 0,
+            link_start: 0,
+            link_before: Field::new(),
+            link_cleared: 0,
             bonus_used: false,
         }
     }
@@ -299,19 +322,33 @@ impl TimedVersus {
             return Err(StepError::IllegalAction { player: i, action });
         }
         let until = self.now + self.timing.place_frames(&p.state.field, action) as u64;
-        p.phase = Phase::Placing { until, action };
+        p.phase = Phase::Placing {
+            since: self.now,
+            until,
+            action,
+        };
         Ok(())
     }
 
     /// 誰かが操作待ちになるか、対局が終わるまで時刻を進める。
     pub fn advance(&mut self) {
+        self.advance_until(u64::MAX);
+    }
+
+    /// `advance` と同じだが、時刻 `limit` を超える出来事は処理しない(描画用)。
+    /// 誰も操作待ちでなく、次の出来事が `limit` より後なら、時刻を `limit` にして止まる。
+    pub fn advance_until(&mut self, limit: u64) {
         while !self.is_over() && !self.needs_action().iter().any(|&b| b) {
             let Some(t) = self.players.iter().filter_map(TimedPlayer::until).min() else {
                 break;
             };
-            if t >= self.timing.max_frames {
+            if t >= self.timing.max_frames && limit >= self.timing.max_frames {
                 self.now = self.timing.max_frames;
                 self.timed_out = true;
+                break;
+            }
+            if t > limit {
+                self.now = self.now.max(limit);
                 break;
             }
             self.now = t;
@@ -360,9 +397,13 @@ impl TimedVersus {
         let timing = self.timing;
         let now = self.now;
         let p = &mut self.players[i];
-        let Some(clear) = p.state.field.clear_groups() else {
+        let before = p.state.field;
+        let Some((clear, cleared)) = p.state.field.clear_groups_masked() else {
             return false;
         };
+        p.link_start = now;
+        p.link_before = before;
+        p.link_cleared = cleared;
         let frames = timing.link_frames(&p.state.field);
         p.state.field.apply_gravity();
         let score = step_score(chain, &clear);
@@ -427,6 +468,68 @@ impl TimedVersus {
         } else {
             Phase::Ready
         };
+    }
+
+    /// 描画用: プレイヤー `i` の今の見た目。
+    ///
+    /// - 連鎖1つの消去の演出中(開始から `vanish` フレームの間)は、消える前の盤面と消えるセル。
+    /// - 設置中は、落下中の組ぷよ2個の (段(小数), 列, 色)。出現位置から着地位置まで、
+    ///   出現と接地の時間を除いた区間で一定の速さで落ちるとみなす。
+    pub fn display(&self, i: usize) -> Display {
+        let p = &self.players[i];
+        let mut d = Display {
+            field: p.state.field,
+            cleared: 0,
+            chain: 0,
+            falling: Vec::new(),
+        };
+        match p.phase {
+            Phase::Chaining { chain, .. } => {
+                d.chain = chain;
+                if self.now < p.link_start + self.timing.vanish as u64 {
+                    d.field = p.link_before;
+                    d.cleared = p.link_cleared;
+                }
+            }
+            Phase::Placing {
+                since,
+                until,
+                action,
+            } => {
+                let pair = self.pair(i, 0);
+                let h = p.state.field.heights();
+                let (a, c) = (action.axis_col(), action.child_col());
+                // (開始段, 着地段, 列, 色)
+                let cells = match action.rotation() {
+                    crate::action::Rotation::Up => [
+                        (SPAWN_ROW, h[a], a, pair.axis),
+                        (SPAWN_ROW + 1, h[a] + 1, a, pair.child),
+                    ],
+                    crate::action::Rotation::Down => [
+                        (SPAWN_ROW + 1, h[a] + 1, a, pair.axis),
+                        (SPAWN_ROW, h[a], a, pair.child),
+                    ],
+                    _ => [
+                        (SPAWN_ROW, h[a], a, pair.axis),
+                        (SPAWN_ROW, h[c], c, pair.child),
+                    ],
+                };
+                let begin = since + self.timing.spawn as u64;
+                let end = until
+                    .saturating_sub(self.timing.landing as u64)
+                    .max(begin + 1);
+                let f = (self.now.saturating_sub(begin) as f32 / (end - begin) as f32).min(1.0);
+                d.falling = cells
+                    .iter()
+                    .map(|&(from, to, col, color)| {
+                        let to = to.min(from);
+                        (from as f32 - (from - to) as f32 * f, col, color)
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+        d
     }
 
     /// テスト・解析用: プレイヤー状態を直接書き換える。
@@ -562,6 +665,34 @@ mod tests {
         assert_eq!(g.player(1).unconfirmed, 0);
         assert_eq!(g.player(1).total_pending(), 1);
         assert_eq!(g.player(1).state.field.plane(Puyo::Ojama), 0);
+    }
+
+    #[test]
+    fn display_shows_vanishing_puyos_then_the_fallen_board() {
+        let mut g = TimedVersus::new(5);
+        let c = g.pair(0, 0).axis.to_char();
+        let row = format!("{c}.....");
+        g.player_mut(0).state.field = Field::from_rows(&[&row, &row, &row]).unwrap();
+        g.act(0, up(0)).unwrap();
+        g.act(1, up(5)).unwrap();
+        // 高さ3の列: 12 + 2 × 8 + 20 = 48F で着地して1連鎖目が始まる
+        g.advance_until(48);
+        assert_eq!(g.now(), 48);
+        let d = g.display(0);
+        assert_eq!(d.chain, 1);
+        assert!(d.cleared.count_ones() >= 4);
+        // 消える前の盤面
+        assert!(d.field.count() >= 4);
+        // 消去の演出(50F)が終わると、消えた後の盤面になる(途中で操作待ちになる P1 は置き続ける)
+        while g.now() < 48 + 50 {
+            if g.needs_action()[1] {
+                g.act(1, up(5)).unwrap();
+            }
+            g.advance_until(48 + 50);
+        }
+        let d = g.display(0);
+        assert_eq!(d.cleared, 0);
+        assert_eq!(d.field, g.player(0).state.field);
     }
 
     #[test]

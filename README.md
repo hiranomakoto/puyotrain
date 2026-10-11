@@ -479,7 +479,17 @@ python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir 
 - 学習環境 `TimedVersusVecEnv` は、学習側が操作待ちになるまで全局を進める(途中の相手の手もまとめて求める)。
   時刻の進行・観測・greedy の手は `TimedBatch`(Rust)で全局分を並列に計算する。
 - 同期ターン制の対戦の重みから引き継ぎ、増えた入力は影響ゼロで始める(価値ヘッドも引き継ぐ)。
-- 評価も時間のモデルで打つ。動画は未対応。
+- 評価も時間のモデルで打つ。動画はチェックポイントごとに greedy との対局を左右入れ替えて録画する
+  (`video.every_checkpoints` 回に1回)。
+
+時間のモデルの動画(対局の時刻に沿って実時間で描く。落下中の組ぷよ、消える直前のぷよの強調、
+予告おじゃまの「確定+未確定」を表示。おじゃまの落下は降り始めの時点でまとめて描く):
+
+```bash
+python scripts/replay.py --agent runs/versus_timed/checkpoints/step_XXXXXXXXXX.zip --agent2 greedy     --timed --seeds 0 1 --out-dir out --render --config configs/versus_timed_ppo.yaml
+```
+
+リプレイの `actions` は `[[時刻(フレーム), プレイヤー, 手], ...]`。速さは設定の `video.timed_speed`(1 = 実時間)。
 
 ### レーティング(Elo)
 

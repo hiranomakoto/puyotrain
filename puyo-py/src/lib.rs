@@ -655,6 +655,34 @@ impl PyTimedVersus {
         self.inner.advance()
     }
 
+    /// `advance` と同じだが、時刻 `limit`(フレーム)を超える出来事は処理しない(描画用)。
+    fn advance_until(&mut self, limit: u64) {
+        self.inner.advance_until(limit)
+    }
+
+    /// 描画用の今の見た目: board (13, 6) int8、cleared (13, 6) bool か None(消去の演出中だけ)、
+    /// chain(連鎖中なら何連鎖目か)、falling [(段(小数), 列, 色), ...](設置中の組ぷよ)、phase。
+    fn display<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
+        check_player(player)?;
+        let disp = self.inner.display(player);
+        let d = PyDict::new(py);
+        d.set_item("board", grid(py, &disp.field)?)?;
+        if disp.cleared != 0 {
+            d.set_item("cleared", mask_grid(py, disp.cleared)?)?;
+        } else {
+            d.set_item("cleared", py.None())?;
+        }
+        d.set_item("chain", disp.chain)?;
+        let falling: Vec<(f32, usize, usize)> = disp
+            .falling
+            .iter()
+            .map(|&(row, col, color)| (row, col, color.index()))
+            .collect();
+        d.set_item("falling", falling)?;
+        d.set_item("phase", phase_name(&self.inner.player(player).phase))?;
+        Ok(d)
+    }
+
     fn legal_actions(&self, player: usize) -> PyResult<u32> {
         check_player(player)?;
         Ok(self.inner.legal_actions(player))

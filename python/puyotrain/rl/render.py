@@ -2,6 +2,9 @@
 
 リプレイを再シミュレーションし、トレース付き step の中間盤面
 (設置後・消去前・消去後・落下後・おじゃま降下後)を順に描画する。
+
+時間のモデル(mode = timed)のリプレイは、対局の時刻に沿って一定間隔で盤面を描く
+(既定は実時間。設定 ``video.timed_speed`` で速さを変えられる)。
 """
 
 from __future__ import annotations
@@ -14,7 +17,9 @@ from typing import Optional
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .._puyo import Game, Versus
+from collections import deque
+
+from .._puyo import Game, TimedVersus, Versus
 from .replay import load_replay
 
 # ---------------------------------------------------------------- 見た目
@@ -67,6 +72,9 @@ class PlayerView:
     training_step: Optional[int]
     pending: int = 0
     banner: str = ""
+    moves: Optional[int] = None        # 手数(プレイヤーごとに違うとき。None なら Scene.move)
+    pending_text: str = ""             # 予告おじゃまの表示(空なら pending)
+    falling: list = field(default_factory=list)  # 落下中のぷよ [(段(小数), 列, 色), ...]
 
 
 @dataclass
@@ -107,6 +115,64 @@ def solo_scenes(replay: dict, cfg: dict):
     end = "GAME OVER" if g.is_over else f"END ({g.turn} MOVES)"
     pv = PlayerView(g.board(), None, 0, g.score, max_chain, vp[:2], label, step, banner=end)
     yield Scene([pv], g.turn, cfg["end_hold_frames"])
+
+
+def timed_scenes(replay: dict, cfg: dict):
+    """時間のモデルのリプレイを、時刻に沿って一定間隔で描く(1シーン = 動画の1フレーム)。
+
+    1フレームあたりの対局のフレーム数は 60 / fps × ``timed_speed``(既定1 = 実時間)。
+    手を決めた時刻はリプレイの記録どおりに再現する。
+    """
+    meta = replay["meta"]
+    labels, steps = meta["labels"], meta["training_steps"]
+    g = TimedVersus(int(replay["seed"]), replay.get("timing"))
+    events = deque(replay["actions"])
+    step = max(1, round(60 / cfg["fps"] * float(cfg.get("timed_speed", 1.0))))
+    t = 0
+
+    def decide() -> None:
+        # 時刻 t までの出来事を処理し、操作待ちになったプレイヤーにはリプレイの手を決めさせる
+        while True:
+            g.advance_until(t)
+            acted = False
+            for p in (0, 1):
+                if g.needs_action()[p]:
+                    when, who, a = events.popleft()
+                    if who != p or when != g.now:
+                        raise ValueError(f"replay mismatch at frame {g.now}: "
+                                         f"expected player {p}, got {who} at {when}")
+                    g.act(p, int(a))
+                    acted = True
+            if not acted:
+                return
+
+    def views(banners=("", "")) -> list[PlayerView]:
+        scores, chains, moves = g.scores(), g.max_chains(), g.moves()
+        pending = g.pending_ojama()
+        out = []
+        for p in (0, 1):
+            d = g.display(p)
+            confirmed, unconfirmed = pending[p]
+            text = f"{confirmed}+{unconfirmed}" if unconfirmed else str(confirmed)
+            out.append(PlayerView(d["board"], d["cleared"], d["chain"], scores[p], chains[p],
+                                  g.visible_pairs(p)[1:3], labels[p], steps[p],
+                                  confirmed + unconfirmed, banners[p], moves[p], text,
+                                  d["falling"]))
+        return out
+
+    while True:
+        decide()
+        yield Scene(views(), 0, 1, footer=f"{g.now / 60:5.1f} s")
+        if g.is_over:
+            break
+        t += step
+    if g.timed_out:
+        banners = ("END", "END")
+    elif g.is_draw:
+        banners = ("DRAW", "DRAW")
+    else:
+        banners = ("WIN", "LOSE") if g.winner == 0 else ("LOSE", "WIN")
+    yield Scene(views(banners), 0, cfg["end_hold_frames"], footer=f"{g.now / 60:5.1f} s")
 
 
 def versus_scenes(replay: dict, cfg: dict):
@@ -190,6 +256,8 @@ def _draw_panel(img: Image.Image, ox: int, pv: PlayerView, move: int) -> None:
                 continue
             hl = pv.cleared is not None and bool(pv.cleared[r, c])
             _puyo(d, bx + c * CELL, by + (12 - r) * CELL, CELL, v, hl)
+    for row, col, color in pv.falling:
+        _puyo(d, bx + col * CELL, by + round((12 - row) * CELL), CELL, color)
     # 右側の情報
     sx = ox + SIDE_X
     y = BOARD_Y
@@ -202,9 +270,10 @@ def _draw_panel(img: Image.Image, ox: int, pv: PlayerView, move: int) -> None:
         y += 30 + 2 * size
     y += 6
     rows = [("SCORE", f"{pv.score:,}"), ("CHAIN", str(pv.chain) if pv.chain else "-"),
-            ("MAX CHAIN", str(pv.max_chain)), ("MOVE", str(move))]
+            ("MAX CHAIN", str(pv.max_chain)),
+            ("MOVE", str(pv.moves if pv.moves is not None else move))]
     if pv.pending:
-        rows.append(("OJAMA", str(pv.pending)))
+        rows.append(("OJAMA", pv.pending_text or str(pv.pending)))
     for title, val in rows:
         d.text((sx, y), title, font=_font(12), fill=MUTED)
         color = ACCENT if title == "CHAIN" and pv.chain else TEXT
@@ -223,9 +292,12 @@ def draw_scene(scene: Scene) -> np.ndarray:
     img = Image.new("RGB", (PANEL_W * len(scene.players), PANEL_H), BG)
     for i, pv in enumerate(scene.players):
         _draw_panel(img, i * PANEL_W, pv, scene.move)
+    d = ImageDraw.Draw(img)
     if len(scene.players) == 2:
-        d = ImageDraw.Draw(img)
         d.line([PANEL_W, 8, PANEL_W, PANEL_H - 8], fill=GRID, width=2)
+    if scene.footer:
+        w = d.textlength(scene.footer, font=_font(16))
+        d.text(((img.width - w) / 2, PANEL_H - 24), scene.footer, font=_font(16), fill=MUTED)
     return np.asarray(img)
 
 
@@ -233,7 +305,12 @@ def render_replay(replay: dict, out: Path, cfg: dict) -> Path:
     """リプレイ(dict)を MP4 にする。"""
     import imageio.v2 as imageio
 
-    scenes = solo_scenes(replay, cfg) if replay["mode"] == "solo" else versus_scenes(replay, cfg)
+    if replay["mode"] == "solo":
+        scenes = solo_scenes(replay, cfg)
+    elif replay["mode"] == "timed":
+        scenes = timed_scenes(replay, cfg)
+    else:
+        scenes = versus_scenes(replay, cfg)
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".part.mp4")

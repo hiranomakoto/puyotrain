@@ -52,7 +52,7 @@ def timed_cfg(tmp_path, versus_ckpt, *extra):
         "env.n_envs=4", "ppo.total_timesteps=256", *TINY_PPO, "checkpoint.every_steps=128",
         "pool.snapshot_every=128", "eval.seeds.count=1",
         f"eval.opponents=[greedy, solo, {versus_ckpt}]",
-        f"init_from={versus_ckpt}", f"pool.solo={versus_ckpt}", *extra,
+        f"init_from={versus_ckpt}", f"pool.solo={versus_ckpt}", "video.enabled=false", *extra,
     ])
 
 
@@ -198,6 +198,43 @@ def test_tiny_timed_training_and_resume(tmp_path, versus_ckpt, capsys):
     assert "[profile] 1 iters" in out
     resume(run, ["ppo.total_timesteps=384"])
     assert (run / "checkpoints" / "step_0000000384.zip").exists()
+
+
+def test_display_shows_falling_pair_and_advance_until_stops_at_limit():
+    g = TimedVersus(5)
+    d = g.display(0)
+    assert d["phase"] == "ready" and d["falling"] == [] and d["cleared"] is None
+    g.act(0, 0)
+    g.act(1, 5)
+    g.advance_until(30)
+    assert g.now == 30
+    d = g.display(0)
+    assert d["phase"] == "placing" and len(d["falling"]) == 2
+    rows = sorted(r for r, _, _ in d["falling"])
+    assert 0 < rows[0] < 11  # 出現位置(11)と着地位置(0)の間
+    g.advance_until(1000)  # 操作待ちで止まる
+    assert g.needs_action() == (True, True) and g.now == 54
+
+
+def test_timed_replay_roundtrip_and_render(tmp_path):
+    from puyotrain.rl.agents import RandomAgent
+    from puyotrain.rl.render import render_replay, timed_scenes
+    from puyotrain.rl.replay import load_replay, record_timed, save_replay
+
+    rep = record_timed((GreedyAgent(0), RandomAgent(1)), 3)
+    assert rep["mode"] == "timed" and rep["actions"][0][0] == 0
+    path = save_replay(rep, tmp_path / "r.json")
+    loaded = load_replay(path)
+    cfg = {"fps": 30, "frames_per_move": 1, "frames_per_chain_stage": 1, "end_hold_frames": 2,
+           "timed_speed": 20.0}
+    scenes = list(timed_scenes(loaded, cfg))
+    assert scenes[-1].players[0].banner in ("WIN", "LOSE", "DRAW")
+    # 再生の最後の時刻・勝敗が記録と同じ
+    assert scenes[-1].footer.strip() == f"{rep['meta']['frames'] / 60:5.1f} s".strip()
+    winner = 0 if rep["meta"]["result"] == "p1_win" else 1
+    assert scenes[-1].players[winner].banner == "WIN"
+    out = render_replay(loaded, tmp_path / "r.mp4", cfg)
+    assert out.exists() and out.stat().st_size > 0
 
 
 def test_greedy_opponent_in_timed_pool_is_greedy():

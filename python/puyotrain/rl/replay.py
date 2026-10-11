@@ -4,10 +4,12 @@
 
     {
       "format": "puyotrain-replay", "version": 1,
-      "mode": "solo" | "versus",
+      "mode": "solo" | "versus" | "timed",
       "seed": 0,
       "actions": [3, 12, ...]            # solo
-               | [[3, 5], [12, 0], ...], # versus
+               | [[3, 5], [12, 0], ...]  # versus
+               | [[t, p, a], ...],       # timed: 時刻 t(フレーム)にプレイヤー p が手 a を決めた
+      "timing": {...},                   # timed のみ: 時間の定数
       "meta": {"agents": [...], "labels": [...], "training_steps": [...],
                "final_scores": [...], "max_chains": [...], "moves": 123,
                "result": "dead" | "max_moves" | "p1_win" | "p2_win" | "draw",
@@ -23,7 +25,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from .._puyo import Versus
+from .._puyo import TimedVersus, Versus
 from .agents import Agent, agent_label, make_agent
 from .evaluate import play_solo
 
@@ -106,6 +108,49 @@ def record_versus(
     }
 
 
+def record_timed(agents: tuple[Agent, Agent], seed: int, timing: Optional[dict] = None,
+                 extra_meta: Optional[dict] = None) -> dict:
+    """時間のモデル(``TimedVersus``)で1局打ち、リプレイにする。"""
+    for a in agents:
+        a.reset(seed)
+    g = TimedVersus(seed, timing)
+    actions: list[list[int]] = []
+    while not g.is_over:
+        for p in (0, 1):
+            if g.needs_action()[p]:
+                a = agents[p].act(g, p)
+                g.act(p, a)
+                actions.append([g.now, p, a])
+        g.advance()
+    if g.timed_out:
+        result = "max_moves"
+    elif g.is_draw:
+        result = "draw"
+    else:
+        result = f"p{g.winner + 1}_win"
+    meta = {
+        "agents": [a.describe() for a in agents],
+        "labels": [agent_label(a) for a in agents],
+        "training_steps": [_training_step(a) for a in agents],
+        "final_scores": list(g.scores()),
+        "max_chains": list(g.max_chains()),
+        "moves": list(g.moves()),
+        "frames": g.now,
+        "result": result,
+        "created_at": _now(),
+    }
+    meta.update(extra_meta or {})
+    return {
+        "format": FORMAT,
+        "version": VERSION,
+        "mode": "timed",
+        "seed": seed,
+        "timing": g.timing(),
+        "actions": actions,
+        "meta": meta,
+    }
+
+
 def save_replay(replay: dict, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(replay, ensure_ascii=False), encoding="utf-8")
@@ -129,6 +174,7 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="チェックポイント(または random/greedy)で対局してリプレイを保存する")
     p.add_argument("--agent", required=True, help="random / greedy / チェックポイント(.zip)")
     p.add_argument("--agent2", help="指定すると対戦(左 = --agent、右 = --agent2)")
+    p.add_argument("--timed", action="store_true", help="対戦を時間のモデル(TimedVersus)で打つ")
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     p.add_argument("--max-moves", type=int, default=500)
     p.add_argument("--out-dir", type=Path, default=Path("replays"))
@@ -142,6 +188,8 @@ def main(argv=None) -> None:
     for seed in args.seeds:
         if a2 is None:
             rep = record_solo(a1, seed, args.max_moves)
+        elif args.timed:
+            rep = record_timed((a1, a2), seed)
         else:
             rep = record_versus((a1, a2), seed, args.max_moves)
         path = save_replay(rep, args.out_dir / f"{replay_name(rep['meta']['labels'], seed)}.json")
