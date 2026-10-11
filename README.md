@@ -442,6 +442,20 @@ python scripts/render_all.py runs/<run> --force    # すべて作り直す(リ�
 python scripts/match.py runs/<run>/checkpoints/step_XXXXXXXXXX.zip greedy --seeds 100 --out out/match.json
 ```
 
+対戦は全局を同時に1手ずつ進め、PPO の重みは全局分をまとめて推論する。
+
+### レーティング(Elo)
+
+```bash
+# ランの 250万ステップごとのチェックポイント(と最新)+ greedy + 1人プレイの重みの総当たり
+python scripts/league.py runs/versus_main --every 2500000 --include greedy solo --seeds 25 --device cuda
+```
+
+- 総当たりの結果から Bradley-Terry モデル(Elo と同じ勝率の式)で全員の強さを推定し、greedy を 1000 にそろえる。
+  引き分け・打ち切りは0.5勝、全勝でも発散しないよう各ペアに仮想の引き分けを1局足す。
+- 結果は `<run>/league.json`。次回は新しいペアだけを打つ(シード数・最大ターンが同じ場合)。
+- 1ペア50局(`--seeds 25`)だと、1人あたりの誤差はおよそ ±50 程度。
+
 ### 自己対戦の学習
 
 ```bash
@@ -467,6 +481,30 @@ docker compose run --rm train python scripts/train_versus.py --run-dir runs/vers
   `eval.seeds` × 左右入れ替えで対局し、勝率を `metrics.jsonl` と TensorBoard(`eval/win_rate_vs_*`)に出す。
   学習中の勝率は `rollout/win_rate`(相手別は `rollout/win_rate_greedy` など)。
 - 動画: greedy との対局を左右入れ替えて録画する(`videos/step_..._vs_greedy_p1_seed0.mp4` など)。
+
+### プロファイリング(1人プレイ・対戦の両方)
+
+設定の `profile.enabled`(既定 true)で、学習ループの所要時間を `profile.every_iterations` 回の
+イテレーション(ロールアウト + 更新)ごとに区分して出す(`python/puyotrain/rl/profiling.py`)。
+起動時に並列環境数・バッチサイズ・パラメータ数・GPU も表示する。
+
+```
+[profile] 10 iters 95.7s  steps/s=428 samples/s=28038  env=12.2% opp_infer=65.6% infer=11.4% transfer=2.5% update=6.1% checkpoint=0.0% other=2.2%  gpu_peak=269MiB
+```
+
+| 区分 | 内容 |
+|---|---|
+| env | 環境シミュレーション(Rust の対局進行・特徴量、greedy の相手、観測の組み立て) |
+| opp_infer | 相手の推論(自己対戦で相手が PPO の重みのとき) |
+| infer | 学習側の推論(ロールアウト中の forward) |
+| transfer | CPU → GPU 転送(ロールアウトの観測、更新時のミニバッチ) |
+| update | ネットワーク更新(transfer を除く) |
+| checkpoint | 保存・評価・動画 |
+| other | 残り |
+
+- steps/sec = 環境ステップ数 ÷ 経過時間、samples/sec = 更新で処理したサンプル数(バッファ × n_epochs)÷ update 時間。
+- 計測区間の終わりで `torch.cuda.synchronize()` を呼ぶので、計測しないときより少し遅くなる。
+  TensorBoard には `perf/*` で記録する。
 
 ## テスト
 

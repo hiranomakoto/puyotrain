@@ -17,44 +17,69 @@ from pathlib import Path
 
 import numpy as np
 
-from .agents import Agent, make_agent
+from .._puyo import Versus
+from .agents import Agent, PPOAgent, make_agent
 from .replay import record_versus, replay_name, save_replay
 
 
-def _game_record(rep: dict, swapped: bool) -> dict:
-    """リプレイのメタ情報を、1つ目のエージェント(A)視点の記録にする。"""
-    m = rep["meta"]
-    a, b = (1, 0) if swapped else (0, 1)
-    result = m["result"]
-    if result == f"p{a + 1}_win":
-        outcome = "win"
-    elif result == f"p{b + 1}_win":
-        outcome = "loss"
-    elif result == "draw":
-        outcome = "draw"
-    else:
-        outcome = "timeout"
-    return {
-        "seed": rep["seed"],
-        "swapped": swapped,
-        "outcome": outcome,
-        "turns": m["moves"],
-        "max_chain": [m["max_chains"][a], m["max_chains"][b]],
-        "score": [m["final_scores"][a], m["final_scores"][b]],
-    }
+def _actions(agent: Agent, games: list[Versus], players: list[int]) -> list[int]:
+    """複数局の手をまとめて求める(PPO の重みは1回の推論で)。"""
+    if isinstance(agent, PPOAgent):
+        return agent.act_batch([agent.observe(g, p) for g, p in zip(games, players)])
+    return [agent.act(g, p) for g, p in zip(games, players)]
+
+
+def play_games(a: Agent, b: Agent, seeds: list[int], max_turns: int) -> list[dict]:
+    """A 対 B を各シード左右入れ替えて打ち、1局ごとの A 視点の記録を返す。
+    全局を同時に1手ずつ進め、PPO の重みは全局分をまとめて推論する。"""
+    specs = [(s, swapped) for s in seeds for swapped in (False, True)]
+    games = [Versus(s) for s, _ in specs]
+    a_side = [1 if swapped else 0 for _, swapped in specs]
+    max_chain = [[0, 0] for _ in specs]
+    a.reset(seeds[0] if seeds else 0)
+    b.reset(seeds[0] if seeds else 0)
+    while True:
+        active = [i for i, g in enumerate(games) if not g.is_over and g.turn < max_turns]
+        if not active:
+            break
+        act_a = _actions(a, [games[i] for i in active], [a_side[i] for i in active])
+        act_b = _actions(b, [games[i] for i in active], [1 - a_side[i] for i in active])
+        for i, x, y in zip(active, act_a, act_b):
+            pair = [0, 0]
+            pair[a_side[i]], pair[1 - a_side[i]] = x, y
+            res = games[i].step(*pair)
+            for p in (0, 1):
+                max_chain[i][p] = max(max_chain[i][p], res[p]["chains"])
+    records = []
+    for (seed, swapped), g, mc, me in zip(specs, games, max_chain, a_side):
+        if not g.is_over:
+            outcome = "timeout"
+        elif g.is_draw:
+            outcome = "draw"
+        else:
+            outcome = "win" if g.winner == me else "loss"
+        scores = g.scores()
+        records.append({
+            "seed": seed,
+            "swapped": swapped,
+            "outcome": outcome,
+            "turns": g.turn,
+            "max_chain": [mc[me], mc[1 - me]],
+            "score": [scores[me], scores[1 - me]],
+        })
+    return records
 
 
 def play_match(a: Agent, b: Agent, seeds: list[int], max_turns: int,
                replay_dir: Path | None = None, n_replays: int = 0) -> dict:
-    """A 対 B を各シード左右入れ替えて打ち、A 視点の集計を返す。"""
+    """A 対 B を各シード左右入れ替えて打ち、A 視点の集計を返す。
+    ``replay_dir`` を指定すると、最初の ``n_replays`` シード分の対局をリプレイとして保存する。"""
     t = time.perf_counter()
-    games = []
-    for i, seed in enumerate(seeds):
-        for swapped in (False, True):
-            pair = (b, a) if swapped else (a, b)
-            rep = record_versus(pair, seed, max_turns)
-            games.append(_game_record(rep, swapped))
-            if replay_dir is not None and i < n_replays:
+    games = play_games(a, b, seeds, max_turns)
+    if replay_dir is not None:
+        for seed in seeds[:n_replays]:
+            for pair in ((a, b), (b, a)):
+                rep = record_versus(pair, seed, max_turns)
                 save_replay(rep, replay_dir / f"{replay_name(rep['meta']['labels'], seed)}.json")
     outcomes = [g["outcome"] for g in games]
     n = len(games)

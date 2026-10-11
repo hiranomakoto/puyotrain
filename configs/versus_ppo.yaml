@@ -62,3 +62,7 @@ video:
   frames_per_move: 4
   frames_per_chain_stage: 8
   end_hold_frames: 45
+
+profile:
+  enabled: true            # 学習ループの所要時間を区分ごとに測ってログに出す(perf/* と標準出力)
+  every_iterations: 10     # この回数のイテレーション(ロールアウト + 更新)ごとに集計して出す

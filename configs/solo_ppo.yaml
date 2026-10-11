@@ -54,3 +54,7 @@ video:
   frames_per_move: 4        # 連鎖の無い1手の表示フレーム数
   frames_per_chain_stage: 8 # 消去前・消去後・落下後それぞれの表示フレーム数
   end_hold_frames: 45       # 終局後に止める長さ
+
+profile:
+  enabled: true            # 学習ループの所要時間を区分ごとに測ってログに出す(perf/* と標準出力)
+  every_iterations: 10     # この回数のイテレーション(ロールアウト + 更新)ごとに集計して出す

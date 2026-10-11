@@ -92,6 +92,7 @@ class VersusVecEnv(VecEnv):
         self.ep_start = [0.0] * n_envs
         self.masks = [None] * n_envs
         self.actions: Optional[np.ndarray] = None
+        self.timer = None  # プロファイリング用(profiling.SectionTimer)。相手の推論時間を測る
 
     # ------------------------------------------------------------------ 進行
 
@@ -132,7 +133,12 @@ class VersusVecEnv(VecEnv):
         for idxs in batched.values():
             agent = self.opponents[idxs[0]][1]
             obs = [agent.observe(self.games[i], 1 - self.sides[i]) for i in idxs]
-            for i, a in zip(idxs, agent.act_batch(obs)):
+            if self.timer is not None:
+                with self.timer.section("opp_infer", sync=True):
+                    batch_acts = agent.act_batch(obs)
+            else:
+                batch_acts = agent.act_batch(obs)
+            for i, a in zip(idxs, batch_acts):
                 acts[i] = a
         return acts
 

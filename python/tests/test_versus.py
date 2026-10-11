@@ -134,6 +134,66 @@ def test_tiny_versus_training_and_resume(tmp_path, solo_ckpt):
     assert "resume_history.jsonl" in [p.name for p in run.iterdir()]
 
 
+def test_play_games_batched_matches_sequential_for_deterministic_agents(solo_ckpt):
+    from puyotrain.rl.match import play_games
+    from puyotrain.rl.replay import record_versus
+
+    a, b = PPOAgent(solo_ckpt), PPOAgent(solo_ckpt)
+    batched = play_games(a, b, [0, 1], 60)
+    for g in batched:
+        pair = (b, a) if g["swapped"] else (a, b)
+        m = record_versus(pair, g["seed"], 60)["meta"]
+        assert m["moves"] == g["turns"]
+
+
+def test_fit_elo_orders_players_and_anchors():
+    from puyotrain.rl.league import expected_score, fit_elo
+
+    results = {
+        "greedy|a": {"wins": 10, "losses": 40, "draws": 0, "timeouts": 0},
+        "greedy|b": {"wins": 2, "losses": 48, "draws": 0, "timeouts": 0},
+        "a|b": {"wins": 10, "losses": 40, "draws": 0, "timeouts": 0},
+    }
+    r = fit_elo(["greedy", "a", "b"], results, anchor="greedy")
+    assert r["greedy"] == pytest.approx(1000)
+    assert r["greedy"] < r["a"] < r["b"]
+    # 推定した差から予想される勝率は、実際の勝率(仮想の引き分けで少し 0.5 寄り)に近い
+    assert expected_score(r["a"], r["b"]) == pytest.approx(10.5 / 51, abs=0.08)
+    # 全勝でも有限
+    r2 = fit_elo(["x", "y"], {"x|y": {"wins": 50, "losses": 0, "draws": 0, "timeouts": 0}})
+    assert np.isfinite(list(r2.values())).all()
+
+
+def test_league_cli_round_robin(tmp_path, solo_ckpt):
+    from puyotrain.rl.league import main
+
+    out = tmp_path / "league.json"
+    main([str(solo_ckpt.parent.parent), "--every", "128", "--include", "greedy", "random",
+          "--seeds", "1", "--max-turns", "40", "--out", str(out)])
+    data = json.loads(out.read_text())
+    assert set(data["players"]) == {"greedy", "random", "0.000128M"}
+    assert len(data["results"]) == 3
+    # 2回目は新しいペアが無いので打たない
+    main([str(solo_ckpt.parent.parent), "--every", "128", "--include", "greedy", "random",
+          "--seeds", "1", "--max-turns", "40", "--out", str(out)])
+    assert json.loads(out.read_text())["results"] == data["results"]
+
+
+def test_profiler_reports_sections(tmp_path, solo_ckpt, capsys):
+    from puyotrain.rl.train_versus import train
+
+    train(versus_cfg(tmp_path, solo_ckpt, "video.enabled=false", "profile.every_iterations=1"),
+          tmp_path / "run")
+    out = capsys.readouterr().out
+    assert "[profile] n_envs=2" in out
+    assert "parameters: features_extractor=" in out
+    lines = [x for x in out.splitlines() if x.startswith("[profile] 1 iters")]
+    assert lines
+    for name in ("env", "opp_infer", "infer", "transfer", "update", "checkpoint", "other"):
+        assert f" {name}=" in lines[0]
+    assert "steps/s=" in lines[0] and "samples/s=" in lines[0]
+
+
 def test_greedy_pool_member_resets_per_game():
     pool = OpponentPool({"greedy": 1}, None)
     cat, agent = pool.sample()

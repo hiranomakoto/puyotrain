@@ -299,12 +299,26 @@ def prepare_baselines(cfg: dict, run_dir: Path) -> dict:
     return summarize_baselines(results)
 
 
+def profile_callbacks(cfg: dict, model, env, checkpointer) -> list:
+    """``profile.enabled`` なら学習ループの計測を仕込み、そのコールバックを返す。"""
+    pcfg = cfg.get("profile") or {}
+    if not pcfg.get("enabled"):
+        return []
+    from .profiling import attach_profiler
+
+    prof = attach_profiler(model, env, int(pcfg.get("every_iterations", 10)))
+    prof.watch_checkpointer(checkpointer)
+    return [prof]
+
+
 def _learn(model, env, steps: int, callback, run_dir: Path, t0: float,
-           script: str = "scripts/train.py") -> None:
-    """学習を回す。Ctrl+C で止めたときは、その時点の重みを保存してから終える。"""
+           script: str = "scripts/train.py", cfg: dict | None = None) -> None:
+    """学習を回す。Ctrl+C で止めたときは、その時点の重みを保存してから終える。
+    ``cfg`` を渡すと、``profile`` の設定に従って計測も行う。"""
     interrupted = False
+    extra = profile_callbacks(cfg, model, env, callback) if cfg is not None else []
     try:
-        model.learn(total_timesteps=steps, callback=callback, tb_log_name="ppo",
+        model.learn(total_timesteps=steps, callback=[callback, *extra], tb_log_name="ppo",
                     reset_num_timesteps=False)
     except KeyboardInterrupt:
         interrupted = True
@@ -332,7 +346,7 @@ def train(cfg: dict, run_dir: Path | None = None) -> Path:
     baselines = prepare_baselines(cfg, run_dir)
     model, env, total = build_model(cfg, device, str(run_dir / "tb"))
     callback = build_callbacks(cfg, run_dir, baselines, t0)
-    _learn(model, env, total, callback, run_dir, t0)
+    _learn(model, env, total, callback, run_dir, t0, cfg=cfg)
     return run_dir
 
 
@@ -417,7 +431,7 @@ def resume(run_dir: Path, overrides: list[str] | None = None,
     model.num_timesteps = start
     callback = build_callbacks(cfg, out_dir, baselines, t0, start_step=start,
                                extra_record={"resumed_from": str(ckpt)})
-    _learn(model, env, target - start, callback, out_dir, t0)
+    _learn(model, env, target - start, callback, out_dir, t0, cfg=cfg)
     return out_dir
 
 

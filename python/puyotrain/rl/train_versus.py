@@ -296,7 +296,7 @@ def train(cfg: dict, run_dir: Path | None = None) -> Path:
         print(f"init_from {cfg['init_from']}: copied {len(rep['copied'])}, "
               f"widened {len(rep['widened'])}, fresh {len(rep['skipped'])} tensors", flush=True)
     callback = build_callbacks(cfg, run_dir, pool, env, device, t0)
-    _learn(model, env, int(cfg["ppo"]["total_timesteps"]), callback, run_dir, t0, SCRIPT)
+    _learn(model, env, int(cfg["ppo"]["total_timesteps"]), callback, run_dir, t0, SCRIPT, cfg)
     return run_dir
 
 
@@ -368,7 +368,7 @@ def resume(run_dir: Path, overrides: list[str] | None = None,
     model.num_timesteps = start
     callback = build_callbacks(cfg, out_dir, pool, env, device, t0, start_step=start,
                                extra_record={"resumed_from": str(ckpt)})
-    _learn(model, env, target - start, callback, out_dir, t0, SCRIPT)
+    _learn(model, env, target - start, callback, out_dir, t0, SCRIPT, cfg)
     return out_dir
 
 
