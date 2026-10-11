@@ -1,0 +1,45 @@
+# 時間のモデルの学習の分岐(versus_timed の500万ステップから)。
+# 使い方: python scripts/train_versus.py --config configs/versus_timed_b.yaml --run-dir runs/versus_timed_b
+#
+# versus_timed からの変更:
+# - 大連鎖型の相手(1人プレイの完成版)を、学習中の相手のプールに加える
+# - 128並列(batch_size 1024)
+# - 評価の表示名を中身がわかる名前にする(sync_versus / solo_play)
+# 新しいランとして始め、重み(価値ヘッドを含む)は init_from から全部引き継ぐ。補助報酬は元のランの続き
+# (500万ステップで強さ0.5、そこから500万ステップで0)と同じになるよう、係数を半分・期間を500万にする。
+
+mode: versus
+rules: timed
+run_name: versus_timed_b
+init_from: runs/versus_timed/checkpoints/step_0005000000.zip
+
+env:
+  n_envs: 128
+  attack_coef: 0.005        # versus_timed の 0.01 × 0.5
+  potential_coef: 0.025     # versus_timed の 0.05 × 0.5
+  anneal_steps: 5000000
+
+ppo:
+  total_timesteps: 25000000 # versus_timed の 500万 と合わせて 3,000万
+  batch_size: 1024
+
+pool:
+  weights: {greedy: 1, sync_versus: 1, solo_play: 1, past: 2}
+  solo: null
+  fixed:
+    sync_versus: runs/versus_main/checkpoints/step_0016470016.zip
+    solo_play: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+  initial_past:             # versus_timed の過去の自分(分岐元より前のもの)
+    - runs/versus_timed/checkpoints/step_0002000000.zip
+    - runs/versus_timed/checkpoints/step_0004000000.zip
+  snapshot_every: 2000000
+  max_snapshots: 10
+
+eval:
+  seeds: {start: 0, count: 50}
+  opponents: [greedy, sync_versus, solo_play]
+
+video:
+  enabled: true
+  every_checkpoints: 4
+  timed_speed: 1.0

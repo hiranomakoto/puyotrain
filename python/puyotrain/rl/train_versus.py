@@ -103,10 +103,23 @@ def transfer_weights(model, src_path: str | Path) -> dict:
 transfer_solo_weights = transfer_weights
 
 
-def build_pool(cfg: dict, device: str, snapshots: list[str] | None = None) -> OpponentPool:
+def pool_fixed(cfg: dict) -> dict[str, str]:
+    """固定の相手 {名前: パス}。``pool.fixed`` と、以前の形の ``pool.solo``(名前 solo)。"""
     pcfg = cfg["pool"]
-    pool = OpponentPool(pcfg["weights"], pcfg["solo"], device=device,
+    fixed = dict(pcfg.get("fixed") or {})
+    if pcfg.get("solo"):
+        fixed.setdefault("solo", pcfg["solo"])
+    return fixed
+
+
+def build_pool(cfg: dict, device: str, snapshots: list[str] | None = None) -> OpponentPool:
+    """相手のプール。``snapshots`` が None なら ``pool.initial_past`` を過去の自分として入れる
+    (再開のときはチェックポイントの記録にある過去の自分を渡す)。"""
+    pcfg = cfg["pool"]
+    pool = OpponentPool(pcfg["weights"], pool_fixed(cfg), device=device,
                         max_snapshots=int(pcfg["max_snapshots"]), seed=cfg["seed"])
+    if snapshots is None:
+        snapshots = list(pcfg.get("initial_past") or [])
     for p in snapshots or []:
         pool.add_snapshot(Path(p))
     return pool
@@ -170,13 +183,15 @@ def build_model(cfg: dict, env: VersusVecEnv, device: str, tensorboard_log: str 
 def eval_opponent(spec: str, cfg: dict, device: str) -> Agent:
     if spec == "greedy":
         return GreedyAgent(1)
-    if spec == "solo":
-        return PPOAgent(cfg["pool"]["solo"], device=device)
+    fixed = pool_fixed(cfg)
+    if spec in fixed:
+        return PPOAgent(fixed[spec], device=device)
     return PPOAgent(spec, device=device)
 
 
 def opponent_label(spec: str) -> str:
-    if spec in ("greedy", "solo"):
+    """評価の表示名。greedy・固定の相手の名前はそのまま、パスはステップ数から。"""
+    if not spec.endswith(".zip"):
         return spec
     step = checkpoint_step(spec)
     return f"step_{step}" if step is not None else Path(spec).stem
@@ -209,7 +224,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
             if buf:
                 results = [e["result"] for e in buf]
                 self.logger.record("rollout/win_rate", float(np.mean([r == 1 for r in results])))
-                for cat in ("greedy", "solo", "past"):
+                for cat in pool.members:
                     rs = [e["result"] for e in buf if e["opponent"] == cat]
                     if rs:
                         self.logger.record(f"rollout/win_rate_{cat}",

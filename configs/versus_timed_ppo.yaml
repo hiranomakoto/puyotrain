@@ -10,19 +10,26 @@ run_name: versus_timed
 # 増えた分は影響ゼロで始めるので、学習開始時点の方策は引き継ぎ元と同じ。価値ヘッドも引き継ぐ
 init_from: runs/versus_main/checkpoints/step_0016470016.zip
 
+env:
+  n_envs: 128               # 推論1回あたりの局数を増やして速くする(64 → 128)
+
+ppo:
+  batch_size: 1024          # 1回の更新は 128並列 × 64 = 8,192 ステップ
+
 pool:
-  weights: {greedy: 1, solo: 1, past: 2}
-  solo: runs/versus_main/checkpoints/step_0016470016.zip   # 固定の相手(同期ターン制の対戦の完成版)
+  # greedy : 同期ターン制の対戦の完成版 : 1人プレイの完成版(大連鎖型) : 過去の自分
+  weights: {greedy: 1, sync_versus: 1, solo_play: 1, past: 2}
+  solo: null                # 以前の形の固定の相手は使わない
+  fixed:
+    sync_versus: runs/versus_main/checkpoints/step_0016470016.zip
+    solo_play: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
   snapshot_every: 2000000
   max_snapshots: 10
 
 eval:
   seeds: {start: 0, count: 50}
   max_turns: 300            # 時間のモデルでは使わない(打ち切りは timing の max_frames)
-  opponents:
-    - greedy
-    - solo                  # pool.solo(同期ターン制の対戦の完成版)
-    - runs/solo_afterstate_b/checkpoints/step_0019000000.zip   # 1人プレイの完成版
+  opponents: [greedy, sync_versus, solo_play]   # 固定の相手は名前で指定できる
 
 video:
   enabled: true             # greedy との対局を左右入れ替えて録画する(時刻に沿って実時間で描く)

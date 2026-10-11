@@ -26,21 +26,26 @@ _SEED_HIGH = 2**63
 
 
 class OpponentPool:
-    """対戦相手のプール。カテゴリ(greedy / solo / past)を重みで選び、その中から1人選ぶ。
+    """対戦相手のプール。カテゴリを重みで選び、その中から1人選ぶ。
 
-    空のカテゴリは選ばない(学習の最初は past が空)。
+    カテゴリは greedy、固定の相手(``fixed`` の名前ごとに1つ)、past(過去の自分)。
+    空のカテゴリと、重みが無いカテゴリは選ばない(学習の最初は past が空)。
+
+    ``fixed`` は {名前: チェックポイントのパス}。以前の形(パス1つ)を渡すと名前は solo になる。
     """
 
-    def __init__(self, weights: dict[str, float], solo_checkpoint: Optional[str],
+    def __init__(self, weights: dict[str, float], fixed: dict[str, str] | str | None = None,
                  device: str = "cpu", max_snapshots: int = 10, seed: int = 0):
         self.weights = dict(weights)
         self.device = device
         self.max_snapshots = max_snapshots
         self.rng = np.random.default_rng(seed)
-        self.members: dict[str, list[Agent]] = {"greedy": [GreedyAgent(seed)], "solo": [],
-                                                "past": []}
-        if solo_checkpoint:
-            self.members["solo"].append(PPOAgent(solo_checkpoint, device=device))
+        if isinstance(fixed, (str, Path)):
+            fixed = {"solo": str(fixed)}
+        self.members: dict[str, list[Agent]] = {"greedy": [GreedyAgent(seed)]}
+        for name, path in (fixed or {}).items():
+            self.members[name] = [PPOAgent(path, device=device)] if path else []
+        self.members["past"] = []
 
     def add_snapshot(self, path: Path) -> None:
         """過去の自分を追加する。上限を超えたら古いものから外す。"""

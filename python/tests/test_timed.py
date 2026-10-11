@@ -51,8 +51,10 @@ def timed_cfg(tmp_path, versus_ckpt, *extra):
     return load_config("configs/versus_timed_ppo.yaml", [
         "env.n_envs=4", "ppo.total_timesteps=256", *TINY_PPO, "checkpoint.every_steps=128",
         "pool.snapshot_every=128", "eval.seeds.count=1",
-        f"eval.opponents=[greedy, solo, {versus_ckpt}]",
-        f"init_from={versus_ckpt}", f"pool.solo={versus_ckpt}", "video.enabled=false", *extra,
+        "pool.weights={greedy: 1, sync_versus: 1, past: 2}",
+        f"pool.fixed={{sync_versus: {versus_ckpt}}}",
+        f"eval.opponents=[greedy, sync_versus, {versus_ckpt}]",
+        f"init_from={versus_ckpt}", "video.enabled=false", *extra,
     ])
 
 
@@ -188,7 +190,7 @@ def test_tiny_timed_training_and_resume(tmp_path, versus_ckpt, capsys):
     run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "profile.every_iterations=1"),
                 tmp_path / "run")
     rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
-    assert len(rows[-1]["metrics"]) == 3
+    assert set(rows[-1]["metrics"]) == {"greedy", "sync_versus", "step_128"}
     assert "mean_seconds" in rows[-1]["metrics"]["greedy"]
     agent = PPOAgent(run / "checkpoints" / "step_0000000256.zip")
     assert agent.obs_kind == "timed"
@@ -238,6 +240,24 @@ def test_timed_replay_roundtrip_and_render(tmp_path):
     assert scenes[-1].players[winner].banner == "WIN"
     out = render_replay(loaded, tmp_path / "r.mp4", cfg)
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_pool_with_several_fixed_opponents_and_initial_past(tmp_path, versus_ckpt):
+    from puyotrain.rl.train_versus import build_pool, opponent_label, pool_fixed
+
+    cfg = timed_cfg(tmp_path, versus_ckpt, f"pool.fixed={{a: {versus_ckpt}, b: {versus_ckpt}}}",
+                    "pool.weights={greedy: 0, a: 1, b: 1, past: 1}",
+                    f"pool.initial_past=[{versus_ckpt}]")
+    assert set(pool_fixed(cfg)) == {"a", "b"}
+    pool = build_pool(cfg, "cpu")
+    assert set(pool.members) == {"greedy", "a", "b", "past"}
+    assert len(pool.members["past"]) == 1
+    cats = {pool.sample()[0] for _ in range(200)}
+    assert cats == {"a", "b", "past"}  # 重み0の greedy は選ばない
+    assert opponent_label("a") == "a" and opponent_label(str(versus_ckpt)) == "step_128"
+    # 以前の形(pool.solo)も名前 solo の固定の相手として読む
+    old = load_config("configs/versus_ppo.yaml", [f"pool.solo={versus_ckpt}"])
+    assert pool_fixed(old) == {"solo": str(versus_ckpt)}
 
 
 def test_greedy_opponent_in_timed_pool_is_greedy():

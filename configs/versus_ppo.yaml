@@ -21,9 +21,12 @@ env:
   anneal_steps: 10000000    # 補助報酬をこのステップ数で 0 まで直線的に減らす
 
 pool:
-  # 相手のカテゴリを選ぶ重み。past(過去の自分)が空のうちは残りから選ぶ
+  # 相手のカテゴリを選ぶ重み。greedy・固定の相手(fixed の名前)・past(過去の自分)。
+  # 空のカテゴリ(最初の past など)は選ばない
   weights: {greedy: 1, solo: 1, past: 2}
-  solo: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+  solo: runs/solo_afterstate_b/checkpoints/step_0019000000.zip   # 固定の相手(名前 solo)。以前の形
+  fixed: {}                 # 固定の相手 {名前: チェックポイント}(複数指定できる)
+  initial_past: []          # 最初から past に入れる過去の自分(チェックポイント)
   snapshot_every: 2000000   # この間隔で今の重みを past に加える
   max_snapshots: 10         # past に残す数(古いものから外す)
 

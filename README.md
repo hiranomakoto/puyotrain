@@ -520,8 +520,10 @@ docker compose run --rm train python scripts/train_versus.py --run-dir runs/vers
 - 観測: 手ごとの特徴量は対戦用の20個(`VERSUS_ACTION_FEATURE_NAMES`。1人用の13個に、この手で相殺・送る
   おじゃまの数、降ってくる数、降った後に窒息するか・残る潜在連鎖などを足したもの)。対局全体の情報
   `versus_info`(双方の予告おじゃま、潜在連鎖、相手の高さ)。相手の盤面は自分と同じ CNN に通す。
-- 相手: 対局ごとに `pool.weights` の重みで greedy / 1人プレイの重み(`pool.solo`)/ 過去の自分
-  (`pool.snapshot_every` ごとに追加、最大 `pool.max_snapshots`)から選ぶ。学習側の席も対局ごとにランダム。
+- 相手: 対局ごとに `pool.weights` の重みで greedy / 固定の相手(`pool.fixed` に {名前: チェックポイント}
+  で複数指定。以前の形の `pool.solo` は名前 solo)/ 過去の自分(`pool.snapshot_every` ごとに追加、最大
+  `pool.max_snapshots`。`pool.initial_past` で最初から入れておける)から選ぶ。学習側の席も対局ごとにランダム。
+  評価の相手(`eval.opponents`)は greedy、固定の相手の名前、チェックポイントのパスで指定する。
   相手の推論は、同じ相手どうしでまとめて方策ネットに直接流し、過去の自分は重みを束ねて
   (`torch.func.vmap`)全員分を1回で行う。既定の64並列で約1,950 steps/s(RTX 4060 Laptop)。
 - 報酬: 勝ち +1 / 負け −1。補助報酬(生んだおじゃま × `env.attack_coef`、潜在連鎖の整形
