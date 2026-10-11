@@ -259,6 +259,44 @@ def test_profiler_reports_sections(tmp_path, solo_ckpt, capsys):
     assert "steps/s=" in lines[0] and "samples/s=" in lines[0]
 
 
+def test_timed_versus_binding():
+    from puyotrain import TimedVersus
+
+    g = TimedVersus(1)
+    assert g.needs_action() == (True, True)
+    assert g.timing()["chigiri_fall"][0] == 10
+    assert TimedVersus(1, {"vanish": 40}).timing()["vanish"] == 40
+    with pytest.raises(ValueError):
+        TimedVersus(1, {"nope": 1})
+    obs = versus_observation(g, 0, safe_mask=True, versus_features=True)
+    assert obs["action_features"].shape == (22, _puyo.NUM_VERSUS_ACTION_FEATURES)
+    assert obs["action_mask"].sum() > 0
+    g.act(0, 0)  # 列0に縦置き(空の列: 12 + 2 × 11 + 20 = 54F)
+    assert g.needs_action() == (False, True)
+    assert g.legal_actions(0) == 0  # 操作待ちでなければ合法手なし
+    g.act(1, 5)
+    g.advance()
+    assert g.now == 54 and g.needs_action() == (True, True)
+    assert g.visible_pairs(0) == g.visible_pairs(1)  # 同じ位置なら同じツモ
+    g.act(0, 0)
+    g.advance()
+    assert g.now == 54  # P1 が操作待ちのまま
+    assert g.moves() == (1, 1)
+    assert g.phases()[0] == "placing"
+    # ツモの位置は着地したときに進む(P0 はまだ設置中なので P1 と同じ位置)
+    assert g.visible_pairs(0) == g.visible_pairs(1)
+
+
+def test_timed_match_greedy_beats_random():
+    from puyotrain.rl.agents import RandomAgent
+    from puyotrain.rl.match import play_match
+
+    r = play_match(GreedyAgent(0), RandomAgent(1), [0, 1, 2], 0, timed=True)
+    assert r["games"] == 6 and r["wins"] >= 5
+    assert r["mean_seconds"] > 0
+    assert all(g["frames"] > 0 for g in r["per_game"])
+
+
 def test_greedy_pool_member_resets_per_game():
     pool = OpponentPool({"greedy": 1}, None)
     cat, agent = pool.sample()

@@ -6,11 +6,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use puyo_core::afterstate::{
-    ACTION_FEATURE_NAMES, NUM_ACTION_FEATURES, NUM_VERSUS_ACTION_FEATURES, NUM_VERSUS_INFO,
-    VERSUS_ACTION_FEATURE_NAMES, VERSUS_INFO_NAMES,
+    action_features, versus_action_features, versus_info, ACTION_FEATURE_NAMES,
+    NUM_ACTION_FEATURES, NUM_VERSUS_ACTION_FEATURES, NUM_VERSUS_INFO, VERSUS_ACTION_FEATURE_NAMES,
+    VERSUS_INFO_NAMES,
 };
+use puyo_core::bot::safe_actions;
 use puyo_core::field::FULL_MASK;
+use puyo_core::potential::potential_chain;
 use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
+use puyo_core::timed::{Phase, TimedVersus, Timing};
 use puyo_core::{
     Action, ActionMask, Field, Game, Outcome, Pair, PlayerState, Puyo, Rng, StepError, TraceFrame,
     Versus, VersusStep,
@@ -558,6 +562,331 @@ impl PyVersus {
     }
 }
 
+/// dict から時間の定数を読む(書かれていないキーは既定値)。
+fn timing_from_dict(d: Option<&Bound<'_, PyDict>>) -> PyResult<Timing> {
+    let mut t = Timing::default();
+    let Some(d) = d else {
+        return Ok(t);
+    };
+    for (k, v) in d.iter() {
+        let key: String = k.extract()?;
+        match key.as_str() {
+            "spawn" => t.spawn = v.extract()?,
+            "drop_per_row" => t.drop_per_row = v.extract()?,
+            "landing" => t.landing = v.extract()?,
+            "chigiri_fall" => t.chigiri_fall = v.extract()?,
+            "vanish" => t.vanish = v.extract()?,
+            "chain_drop_per_row" => t.chain_drop_per_row = v.extract()?,
+            "chain_landing" => t.chain_landing = v.extract()?,
+            "ojama_landing" => t.ojama_landing = v.extract()?,
+            "max_frames" => t.max_frames = v.extract()?,
+            _ => return Err(PyValueError::new_err(format!("unknown timing key: {key}"))),
+        }
+    }
+    Ok(t)
+}
+
+fn phase_name(p: &Phase) -> &'static str {
+    match p {
+        Phase::Ready => "ready",
+        Phase::Placing { .. } => "placing",
+        Phase::Chaining { .. } => "chaining",
+        Phase::OjamaFalling { .. } => "ojama_falling",
+        Phase::Dead => "dead",
+    }
+}
+
+/// 2人対戦(時間のモデル)。エージェントが使うメソッドは `Versus` と同じ名前・引数。
+///
+/// 進め方: `needs_action()` が True のプレイヤーに `act(player, action)` で手を決めさせ、
+/// `advance()` で次に誰かが操作待ちになるまで時刻を進める。
+#[pyclass(name = "TimedVersus", module = "puyotrain._puyo", skip_from_py_object)]
+#[derive(Clone)]
+struct PyTimedVersus {
+    inner: TimedVersus,
+}
+
+impl PyTimedVersus {
+    /// 予告おじゃまを合計(確定 + 未確定)にしたプレイヤー状態(観測・対局全体の情報用)。
+    fn total_state(&self, i: usize) -> PlayerState {
+        let p = self.inner.player(i);
+        let mut st = p.state;
+        st.pending = p.total_pending();
+        st
+    }
+
+    fn pairs2(&self, i: usize) -> [Pair; 2] {
+        [self.inner.pair(i, 0), self.inner.pair(i, 1)]
+    }
+}
+
+#[pymethods]
+impl PyTimedVersus {
+    /// `timing` は時間の定数の上書き(dict。キーは Timing のフィールド名)。
+    #[new]
+    #[pyo3(signature = (seed, timing=None))]
+    fn new(seed: u64, timing: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        Ok(PyTimedVersus {
+            inner: TimedVersus::with_timing(seed, timing_from_dict(timing)?),
+        })
+    }
+
+    /// 手を決める必要があるプレイヤー (P0, P1)。
+    fn needs_action(&self) -> (bool, bool) {
+        let n = self.inner.needs_action();
+        (n[0], n[1])
+    }
+
+    /// 操作待ちのプレイヤーが手を決める(時刻は進めない)。
+    fn act(&mut self, player: usize, action_index: usize) -> PyResult<()> {
+        check_player(player)?;
+        self.inner
+            .act(player, action(action_index)?)
+            .map_err(to_py_err)
+    }
+
+    /// 誰かが操作待ちになるか、対局が終わるまで時刻を進める。
+    fn advance(&mut self) {
+        self.inner.advance()
+    }
+
+    fn legal_actions(&self, player: usize) -> PyResult<u32> {
+        check_player(player)?;
+        Ok(self.inner.legal_actions(player))
+    }
+
+    fn action_mask<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<i8>>> {
+        check_player(player)?;
+        Ok(PyArray1::from_vec(
+            py,
+            mask_vec(self.inner.legal_actions(player)),
+        ))
+    }
+
+    fn greedy_action(&self, player: usize, seed: u64) -> PyResult<Option<usize>> {
+        check_player(player)?;
+        Ok(self
+            .inner
+            .greedy_action(player, &mut Rng::new(seed))
+            .map(Action::index))
+    }
+
+    fn safe_actions(&self, player: usize) -> PyResult<u32> {
+        check_player(player)?;
+        if !self.inner.needs_action()[player] {
+            return Ok(0);
+        }
+        Ok(safe_actions(
+            &self.inner.player(player).state.field,
+            self.pairs2(player),
+        ))
+    }
+
+    fn safe_action_mask<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<i8>>> {
+        Ok(PyArray1::from_vec(py, mask_vec(self.safe_actions(player)?)))
+    }
+
+    /// プレイヤー `player` 視点の観測(`Versus.observation` と同じ形)。
+    /// `pieces` は自分のツモの位置から、`ojama` は予告の合計(確定 + 未確定)。
+    fn observation<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
+        check_player(player)?;
+        let me = self.total_state(player);
+        let opp = self.total_state(1 - player);
+        observation(
+            py,
+            &me,
+            Some(&opp),
+            &self.inner.visible_pairs(player),
+            self.inner.legal_actions(player),
+        )
+    }
+
+    fn action_features<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        check_player(player)?;
+        let feats = if self.inner.needs_action()[player] {
+            action_features(&self.inner.player(player).state.field, self.pairs2(player))
+        } else {
+            [[0.0; NUM_ACTION_FEATURES]; NUM_ACTIONS]
+        };
+        let flat: Vec<f32> = feats.iter().flatten().copied().collect();
+        PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
+    }
+
+    /// 同期ターン制の対戦用の特徴量(`Versus.versus_action_features` と同じ20個)。
+    /// 予告おじゃまは「次に着地したとき降る」確定分だけを使う。
+    fn versus_action_features<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        check_player(player)?;
+        let feats = if self.inner.needs_action()[player] {
+            versus_action_features(&self.inner.player(player).state, self.pairs2(player))
+        } else {
+            [[0.0; NUM_VERSUS_ACTION_FEATURES]; NUM_ACTIONS]
+        };
+        let flat: Vec<f32> = feats.iter().flatten().copied().collect();
+        PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_VERSUS_ACTION_FEATURES])
+    }
+
+    /// 対局全体の情報(`Versus.versus_info` と同じ8個。予告は確定 + 未確定の合計)。
+    fn versus_info<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        check_player(player)?;
+        let info = versus_info(&self.total_state(player), &self.total_state(1 - player));
+        Ok(PyArray1::from_vec(py, info.to_vec()))
+    }
+
+    fn potential_chain(&self, player: usize) -> PyResult<(u32, u32)> {
+        check_player(player)?;
+        let p = potential_chain(&self.inner.player(player).state.field);
+        Ok((p.chains, p.score))
+    }
+
+    fn visible_pairs(&self, player: usize) -> PyResult<Vec<(usize, usize)>> {
+        check_player(player)?;
+        Ok(self
+            .inner
+            .visible_pairs(player)
+            .into_iter()
+            .map(pair_tuple)
+            .collect())
+    }
+
+    fn board<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<i8>>> {
+        check_player(player)?;
+        grid(py, &self.inner.player(player).state.field)
+    }
+
+    fn field_str(&self, player: usize) -> PyResult<String> {
+        check_player(player)?;
+        Ok(self.inner.player(player).state.field.to_string())
+    }
+
+    /// 予告おじゃま [(確定, 未確定) P0, P1]。
+    fn pending_ojama(&self) -> ((u32, u32), (u32, u32)) {
+        let p = |i: usize| {
+            let pl = self.inner.player(i);
+            (pl.state.pending, pl.unconfirmed)
+        };
+        (p(0), p(1))
+    }
+
+    /// 各プレイヤーの状態の名前 (ready / placing / chaining / ojama_falling / dead)。
+    fn phases(&self) -> (&'static str, &'static str) {
+        (
+            phase_name(&self.inner.player(0).phase),
+            phase_name(&self.inner.player(1).phase),
+        )
+    }
+
+    fn scores(&self) -> (u64, u64) {
+        (
+            self.inner.player(0).state.score,
+            self.inner.player(1).state.score,
+        )
+    }
+
+    fn max_chains(&self) -> (u32, u32) {
+        (
+            self.inner.player(0).max_chain,
+            self.inner.player(1).max_chain,
+        )
+    }
+
+    fn moves(&self) -> (u64, u64) {
+        (self.inner.player(0).moves, self.inner.player(1).moves)
+    }
+
+    /// 現在の時刻(フレーム)。
+    #[getter]
+    fn now(&self) -> u64 {
+        self.inner.now()
+    }
+
+    /// 置いた手数の多い方(`Versus.turn` の代わり)。
+    #[getter]
+    fn turn(&self) -> u64 {
+        self.inner.player(0).moves.max(self.inner.player(1).moves)
+    }
+
+    #[getter]
+    fn is_over(&self) -> bool {
+        self.inner.is_over()
+    }
+
+    #[getter]
+    fn timed_out(&self) -> bool {
+        self.inner.timed_out()
+    }
+
+    #[getter]
+    fn winner(&self) -> Option<usize> {
+        match self.inner.outcome() {
+            Some(Outcome::Win(i)) => Some(i),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn is_draw(&self) -> bool {
+        self.inner.outcome() == Some(Outcome::Draw)
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.inner.seed()
+    }
+
+    /// 時間の定数(dict)。
+    fn timing<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let t = self.inner.timing();
+        let d = PyDict::new(py);
+        d.set_item("spawn", t.spawn)?;
+        d.set_item("drop_per_row", t.drop_per_row)?;
+        d.set_item("landing", t.landing)?;
+        d.set_item("chigiri_fall", t.chigiri_fall.to_vec())?;
+        d.set_item("vanish", t.vanish)?;
+        d.set_item("chain_drop_per_row", t.chain_drop_per_row)?;
+        d.set_item("chain_landing", t.chain_landing)?;
+        d.set_item("ojama_landing", t.ojama_landing.to_vec())?;
+        d.set_item("max_frames", t.max_frames)?;
+        Ok(d)
+    }
+
+    fn clone(&self) -> Self {
+        Clone::clone(self)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TimedVersus(seed={}, now={}, moves={:?})",
+            self.inner.seed(),
+            self.inner.now(),
+            self.moves()
+        )
+    }
+}
+
 fn check_player(player: usize) -> PyResult<()> {
     if player < 2 {
         Ok(())
@@ -570,6 +899,7 @@ fn check_player(player: usize) -> PyResult<()> {
 fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add_class::<PyVersus>()?;
+    m.add_class::<PyTimedVersus>()?;
     m.add("NUM_ACTIONS", NUM_ACTIONS)?;
     m.add("WIDTH", WIDTH)?;
     m.add("HEIGHT", HEIGHT)?;

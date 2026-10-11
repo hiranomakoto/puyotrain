@@ -216,6 +216,22 @@ impl Field {
         moved
     }
 
+    /// 重力を掛けたときに一番長く落ちるぷよの落下段数(浮いているぷよが無ければ0)。
+    /// 各列の一番上のぷよの下にある空きの数の最大。
+    pub fn max_fall_rows(&self) -> u32 {
+        (0..WIDTH)
+            .map(|c| {
+                let b = self.column_bits(c);
+                if b == 0 {
+                    0
+                } else {
+                    (32 - b.leading_zeros()) - b.count_ones()
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// 連結判定領域(12段)内で、上下左右に隣り合う同色ペアの数。
     pub fn same_color_adjacency(&self) -> u32 {
         let mut n = 0;

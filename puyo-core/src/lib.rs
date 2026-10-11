@@ -19,6 +19,7 @@ pub mod phase;
 pub mod potential;
 pub mod rules;
 pub mod score;
+pub mod timed;
 pub mod trace;
 pub mod tsumo;
 pub mod versus;

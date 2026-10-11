@@ -444,6 +444,28 @@ python scripts/match.py runs/<run>/checkpoints/step_XXXXXXXXXX.zip greedy --seed
 
 対戦は全局を同時に1手ずつ進め、PPO の重みは全局分をまとめて推論する。
 
+### 時間のモデル(`TimedVersus`)
+
+ぷよぷよ通のように、設置・連鎖・おじゃま落下に時間がかかる対戦(`puyo-core/src/timed.rs`、設計は
+[document/time_model_design.md](document/time_model_design.md))。時間はフレーム(1/60秒)の整数で、
+盤面から計算する(設置 ≒ 0.8秒、連鎖1つ ≒ 1.25秒、おじゃま落下 ≒ 1.1秒)。連鎖中に送ったおじゃまは
+連鎖が終わるまで「未確定」で、その間は相手に降らない(返しができる)。
+
+```python
+from puyotrain import TimedVersus
+
+g = TimedVersus(seed=0)                 # 時間の定数は TimedVersus(0, {"vanish": 50, ...}) で上書き
+while not g.is_over:
+    for p in (0, 1):
+        if g.needs_action()[p]:          # 操作待ちのプレイヤーだけ手を決める
+            g.act(p, g.greedy_action(p, p))  # 同点の手を選ぶ乱数のシード(左右で変える)
+    g.advance()                          # 次に誰かが操作待ちになるまで時刻を進める
+print(g.winner, g.now / 60, "秒")
+```
+
+エージェントは `Versus` と同じメソッド名(`observation(p)`、`legal_actions(p)` など)で打てる。
+勝率の測定は `python scripts/match.py A B --timed`。
+
 ### レーティング(Elo)
 
 ```bash
