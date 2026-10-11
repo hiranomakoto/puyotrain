@@ -431,6 +431,43 @@ python scripts/render_all.py runs/<run> --force    # すべて作り直す(リ�
 (設置後 → 消去前(消えるぷよを強調)→ 消去後 → 落下後、対戦ではおじゃま降下後も)を順に再生します。
 コマ数や fps は設定の `video` で変えられます。
 
+## 学習基盤(対戦)
+
+方針と経緯は [document/versus_plan.md](document/versus_plan.md) と [document/versus_log.md](document/versus_log.md)。
+
+### 勝率の測定
+
+```bash
+# 2つのエージェントを、各シードで左右を入れ替えて2局ずつ打たせる(100シード = 200局)
+python scripts/match.py runs/<run>/checkpoints/step_XXXXXXXXXX.zip greedy --seeds 100 --out out/match.json
+```
+
+### 自己対戦の学習
+
+```bash
+python scripts/train_versus.py                                   # configs/versus_ppo.yaml の設定で学習
+python scripts/train_versus.py --run-dir runs/versus_main        # 出力先を指定
+python scripts/train_versus.py --resume runs/versus_main         # 再開(--from / --run-dir で分岐も可)
+
+# Docker
+docker compose run --rm train python scripts/train_versus.py --run-dir runs/versus_main
+```
+
+- `init_from` の1人プレイの重み(`policy.action_features`)から始める。形が同じ部分はコピーし、
+  追加した部分(相手の情報、予告おじゃまの特徴量)は影響ゼロで始めるので、学習開始時点の方策は
+  1人プレイの重みと同じ。価値ヘッドは引き継がない。
+- 観測: 手ごとの特徴量は対戦用の20個(`VERSUS_ACTION_FEATURE_NAMES`。1人用の13個に、この手で相殺・送る
+  おじゃまの数、降ってくる数、降った後に窒息するか・残る潜在連鎖などを足したもの)。対局全体の情報
+  `versus_info`(双方の予告おじゃま、潜在連鎖、相手の高さ)。相手の盤面は自分と同じ CNN に通す。
+- 相手: 対局ごとに `pool.weights` の重みで greedy / 1人プレイの重み(`pool.solo`)/ 過去の自分
+  (`pool.snapshot_every` ごとに追加、最大 `pool.max_snapshots`)から選ぶ。学習側の席も対局ごとにランダム。
+- 報酬: 勝ち +1 / 負け −1。補助報酬(生んだおじゃま × `env.attack_coef`、潜在連鎖の整形
+  × `env.potential_coef`)は `env.anneal_steps` で 0 まで直線的に減らす。
+- 評価: チェックポイントごとに `eval.opponents`(既定は greedy と1人プレイの重み)と
+  `eval.seeds` × 左右入れ替えで対局し、勝率を `metrics.jsonl` と TensorBoard(`eval/win_rate_vs_*`)に出す。
+  学習中の勝率は `rollout/win_rate`(相手別は `rollout/win_rate_greedy` など)。
+- 動画: greedy との対局を左右入れ替えて録画する(`videos/step_..._vs_greedy_p1_seed0.mp4` など)。
+
 ## テスト
 
 - `puyo-core/tests/rules.rs`: 得点(4個消し40点、2連鎖360点、連結・色数ボーナス)、おじゃまの換算・相殺・30個上限・全消しボーナス、猶予1手、窒息・引き分け

@@ -299,7 +299,8 @@ def prepare_baselines(cfg: dict, run_dir: Path) -> dict:
     return summarize_baselines(results)
 
 
-def _learn(model, env, steps: int, callback, run_dir: Path, t0: float) -> None:
+def _learn(model, env, steps: int, callback, run_dir: Path, t0: float,
+           script: str = "scripts/train.py") -> None:
     """学習を回す。Ctrl+C で止めたときは、その時点の重みを保存してから終える。"""
     interrupted = False
     try:
@@ -318,7 +319,7 @@ def _learn(model, env, steps: int, callback, run_dir: Path, t0: float) -> None:
             pass
     state = "interrupted" if interrupted else "done"
     print(f"{state} at step {model.num_timesteps:,} ({time.time() - t0:.0f}s): {run_dir}\n"
-          f"resume with: python scripts/train.py --resume {run_dir}", flush=True)
+          f"resume with: python {script} --resume {run_dir}", flush=True)
 
 
 def train(cfg: dict, run_dir: Path | None = None) -> Path:

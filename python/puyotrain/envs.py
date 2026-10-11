@@ -36,9 +36,19 @@ def solo_observation(game: Game, safe_mask: bool = False, action_features: bool 
 
 
 def versus_observation(v: Versus, player: int, safe_mask: bool = False,
-                       action_features: bool = False) -> dict:
+                       action_features: bool = False, versus_features: bool = False) -> dict:
     """対戦のプレイヤー ``player`` 視点の観測。オプションは ``solo_observation`` と同じ
-    (自滅判定と特徴量は予告おじゃまの降下を考えない)。"""
+    (自滅判定は予告おじゃまの降下を考えない)。
+
+    ``versus_features`` が True なら、手ごとの特徴量は対戦用(予告おじゃまを考えた20個、
+    ``Versus.versus_action_features``)になり、対局全体の情報 ``versus_info`` も加える。
+    False なら1人用と同じ13個(1人用で学習した重みと同じ入力)。
+    """
+    if versus_features:
+        obs = _with_options(v.observation(player), lambda: v.versus_action_features(player),
+                            lambda: v.safe_action_mask(player), safe_mask, True)
+        obs["versus_info"] = v.versus_info(player)
+        return obs
     return _with_options(v.observation(player), lambda: v.action_features(player),
                          lambda: v.safe_action_mask(player), safe_mask, action_features)
 

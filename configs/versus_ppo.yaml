@@ -1,0 +1,64 @@
+# 対戦(自己対戦)MaskablePPO の設定。CLI の --set a.b=値 で上書きできる。
+# 使い方: python scripts/train_versus.py [--set ...]
+
+mode: versus
+run_name: versus_ppo        # 出力先: <output_dir>/<run_name>-<日時>/
+output_dir: runs
+seed: 0
+device: auto                # auto / cpu / cuda
+
+# 1人プレイの重みを引き継ぐ(空なら 0 から)。形が同じ部分をコピーし、追加部分は影響ゼロで始める
+init_from: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+
+env:
+  n_envs: 16                # 並列に進める対局数
+  max_turns: 300            # この手数で打ち切り(勝敗なし)
+  safe_mask: true           # 自滅する手を禁止する(予告おじゃまの降下は考えない)
+  attack_coef: 0.01         # 補助報酬: この手の連鎖で生んだおじゃま1個あたり
+  potential_coef: 0.05      # 補助報酬: 潜在連鎖の整形の係数
+  anneal_steps: 10000000    # 補助報酬をこのステップ数で 0 まで直線的に減らす
+
+pool:
+  # 相手のカテゴリを選ぶ重み。past(過去の自分)が空のうちは残りから選ぶ
+  weights: {greedy: 1, solo: 1, past: 2}
+  solo: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+  snapshot_every: 2000000   # この間隔で今の重みを past に加える
+  max_snapshots: 10         # past に残す数(古いものから外す)
+
+ppo:
+  total_timesteps: 30000000
+  learning_rate: 1.0e-4
+  n_steps: 256
+  batch_size: 512
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+policy:                     # init_from の重みと同じ形にする
+  cnn_channels: [32, 64]
+  features_dim: 256
+  piece_planes: true
+  action_hidden: [64, 64]
+  net_arch: [128, 128]      # 価値ヘッドの隠れ層
+
+checkpoint:
+  every_steps: 500000
+
+eval:
+  seeds: {start: 0, count: 50}   # 各シードで左右を入れ替えて2局
+  max_turns: 300
+  opponents: [greedy, solo]      # greedy / solo(pool.solo の重み)/ チェックポイントのパス
+
+video:
+  enabled: true
+  every_checkpoints: 4      # N 回に1回だけ作る(学習終了時は必ず作る)
+  seeds: [0]                # greedy との対局を左右入れ替えて録画する
+  max_moves: 300
+  fps: 30
+  frames_per_move: 4
+  frames_per_chain_stage: 8
+  end_hold_frames: 45

@@ -106,7 +106,9 @@ class PPOAgent(Agent):
     モデルの観測に ``action_features`` があれば(``policy.action_features`` で学習した重み)、
     観測に手ごとの結果の特徴量を加えて打つ。
 
-    対戦では、自滅判定と特徴量は予告おじゃまの降下を考えない(1人用で学習した重みと同じ入力)。
+    モデルの観測に ``versus_info`` があれば(対戦用に学習した重み)、対戦用の特徴量で打つ。
+    この重みは対戦専用(1人用の ``Game`` では打てない)。それ以外の重みは対戦でも1人用と
+    同じ入力(予告おじゃまを考えない特徴量)で打つ。
     """
 
     kind = "ppo"
@@ -128,13 +130,21 @@ class PPOAgent(Agent):
         self.deterministic = deterministic
         self.step = checkpoint_step(self.path)
         self.safe_mask = _trained_with_safe_mask(self.path) if safe_mask is None else safe_mask
-        self.action_features = "action_features" in model.observation_space.spaces
+        spaces = model.observation_space.spaces
+        self.action_features = "action_features" in spaces
+        self.versus_features = "versus_info" in spaces
+
+    def observe(self, state: State, player: int = 0) -> dict:
+        """このモデルが学習したときと同じ形の観測を作る。"""
+        if isinstance(state, Game):
+            if self.versus_features:
+                raise ValueError("this checkpoint was trained for versus games only")
+            return solo_observation(state, self.safe_mask, self.action_features)
+        return versus_observation(state, player, self.safe_mask, self.action_features,
+                                  self.versus_features)
 
     def act(self, state: State, player: int = 0) -> int:
-        if isinstance(state, Game):
-            obs = solo_observation(state, self.safe_mask, self.action_features)
-        else:
-            obs = versus_observation(state, player, self.safe_mask, self.action_features)
+        obs = self.observe(state, player)
         mask = obs["action_mask"].astype(bool)
         action, _ = self.model.predict(obs, action_masks=mask, deterministic=self.deterministic)
         return int(action)

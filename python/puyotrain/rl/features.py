@@ -95,6 +95,51 @@ class PuyoActionFeatures(BaseFeaturesExtractor):
         return th.cat([scores, ctx], dim=1)
 
 
+class PuyoVersusFeatures(PuyoActionFeatures):
+    """対戦用の特徴抽出器(観測に対戦用の ``action_features`` と ``versus_info`` が必要)。
+
+    ``PuyoActionFeatures`` に次を足したもの:
+
+    - 相手の盤面を自分の盤面と同じ CNN(同じ重み)に通し、``versus_info`` と合わせて
+      ``opponent`` 層で文脈ベクトルに足す。
+    - 手ごとの特徴量は対戦用の20個(先頭13個は1人用と同じ)。
+
+    ``post_init`` で ``opponent`` 層をゼロにしておくと、追加した入力(相手の情報、
+    特徴量の14個目以降)は最初は出力に影響しない。1人用の重みを読み込めば、
+    学習開始時点の方策は1人用と同じになる(``transfer_solo_weights``)。
+    """
+
+    def __init__(
+        self,
+        observation_space: gym.spaces.Dict,
+        cnn_channels: tuple[int, ...] = (32, 64),
+        features_dim: int = 256,
+        piece_planes: bool = True,
+        action_hidden: tuple[int, ...] = (64, 64),
+        context_dim: int = 32,
+    ):
+        super().__init__(observation_space, cnn_channels, features_dim, piece_planes,
+                         action_hidden, context_dim)
+        n_info = observation_space["versus_info"].shape[0]
+        self.opponent = nn.Linear(features_dim + n_info, features_dim)
+
+    def post_init(self) -> None:
+        nn.init.zeros_(self.opponent.weight)
+        nn.init.zeros_(self.opponent.bias)
+
+    def forward(self, obs: dict[str, th.Tensor]) -> th.Tensor:
+        ctx = self.board(obs)
+        # 相手視点: 盤面と予告おじゃまの [自分, 相手] を入れ替える(ツモは両者共通)
+        opp_obs = {"board": obs["board"].flip(1), "pieces": obs["pieces"],
+                   "ojama": obs["ojama"].flip(1)}
+        opp = self.board(opp_obs)
+        ctx = ctx + self.opponent(th.cat([opp, obs["versus_info"].float()], dim=1))
+        feats = obs["action_features"].float()
+        c = self.context(ctx)[:, None, :].expand(-1, feats.shape[1], -1)
+        scores = self.scorer(th.cat([feats, c], dim=-1)).squeeze(-1)
+        return th.cat([scores, ctx], dim=1)
+
+
 class TakeFirst(nn.Module):
     """先頭 ``n`` 次元だけを取り出す(パラメータなし)。"""
 
@@ -119,6 +164,9 @@ class PuyoActionPolicy(MaskableMultiInputActorCriticPolicy):
         last = self.features_extractor.scorer[-1]
         nn.init.orthogonal_(last.weight, gain=0.01)
         nn.init.zeros_(last.bias)
+        post_init = getattr(self.features_extractor, "post_init", None)
+        if post_init is not None:
+            post_init()
         self.optimizer = self.optimizer_class(
             self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
         )

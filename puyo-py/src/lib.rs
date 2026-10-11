@@ -5,7 +5,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use puyo_core::afterstate::{ACTION_FEATURE_NAMES, NUM_ACTION_FEATURES};
+use puyo_core::afterstate::{
+    ACTION_FEATURE_NAMES, NUM_ACTION_FEATURES, NUM_VERSUS_ACTION_FEATURES, NUM_VERSUS_INFO,
+    VERSUS_ACTION_FEATURE_NAMES, VERSUS_INFO_NAMES,
+};
 use puyo_core::field::FULL_MASK;
 use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
 use puyo_core::{
@@ -452,6 +455,38 @@ impl PyVersus {
         PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
     }
 
+    /// プレイヤー `player` の対戦用の手ごとの特徴量 (22, NUM_VERSUS_ACTION_FEATURES) float32。
+    /// 列の意味は VERSUS_ACTION_FEATURE_NAMES(先頭13列は action_features と同じ)。
+    fn versus_action_features<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, numpy::PyArray2<f32>>> {
+        check_player(player)?;
+        let flat: Vec<f32> = self
+            .inner
+            .versus_action_features(player)
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_VERSUS_ACTION_FEATURES])
+    }
+
+    /// プレイヤー `player` から見た対局全体の情報 (NUM_VERSUS_INFO,) float32。
+    /// 並びは VERSUS_INFO_NAMES。
+    fn versus_info<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        check_player(player)?;
+        Ok(PyArray1::from_vec(
+            py,
+            self.inner.versus_info(player).to_vec(),
+        ))
+    }
+
     /// プレイヤー `player` の潜在連鎖 (連鎖数, 得点)。
     fn potential_chain(&self, player: usize) -> PyResult<(u32, u32)> {
         check_player(player)?;
@@ -541,5 +576,12 @@ fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NUM_COLORS", NUM_COLORS)?;
     m.add("NUM_ACTION_FEATURES", NUM_ACTION_FEATURES)?;
     m.add("ACTION_FEATURE_NAMES", ACTION_FEATURE_NAMES.to_vec())?;
+    m.add("NUM_VERSUS_ACTION_FEATURES", NUM_VERSUS_ACTION_FEATURES)?;
+    m.add(
+        "VERSUS_ACTION_FEATURE_NAMES",
+        VERSUS_ACTION_FEATURE_NAMES.to_vec(),
+    )?;
+    m.add("NUM_VERSUS_INFO", NUM_VERSUS_INFO)?;
+    m.add("VERSUS_INFO_NAMES", VERSUS_INFO_NAMES.to_vec())?;
     Ok(())
 }

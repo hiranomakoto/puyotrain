@@ -126,6 +126,27 @@ impl Versus {
         }
     }
 
+    /// プレイヤー `i` の対戦用の手ごとの特徴量([`crate::afterstate::versus_action_features`])。
+    /// 終了後は全部0。
+    pub fn versus_action_features(
+        &self,
+        i: usize,
+    ) -> [[f32; crate::afterstate::NUM_VERSUS_ACTION_FEATURES]; crate::rules::NUM_ACTIONS] {
+        if self.is_over() {
+            [[0.0; crate::afterstate::NUM_VERSUS_ACTION_FEATURES]; crate::rules::NUM_ACTIONS]
+        } else {
+            crate::afterstate::versus_action_features(
+                &self.players[i],
+                [self.pair(0), self.pair(1)],
+            )
+        }
+    }
+
+    /// プレイヤー `i` から見た対局全体の情報([`crate::afterstate::versus_info`])。
+    pub fn versus_info(&self, i: usize) -> [f32; crate::afterstate::NUM_VERSUS_INFO] {
+        crate::afterstate::versus_info(&self.players[i], &self.players[1 - i])
+    }
+
     /// プレイヤー `i` の盤面の潜在連鎖([`crate::potential::potential_chain`])。
     pub fn potential_chain(&self, i: usize) -> crate::potential::Potential {
         crate::potential::potential_chain(&self.players[i].field)

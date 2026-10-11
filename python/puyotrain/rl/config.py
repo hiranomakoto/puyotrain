@@ -10,7 +10,10 @@ from typing import Any
 
 import yaml
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "solo_ppo.yaml"
+_CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
+DEFAULT_CONFIG = _CONFIG_DIR / "solo_ppo.yaml"
+# 設定の mode ごとの既定値ファイル(mode が無ければ solo)
+DEFAULT_CONFIGS = {"solo": DEFAULT_CONFIG, "versus": _CONFIG_DIR / "versus_ppo.yaml"}
 
 
 def load_config(path: str | Path | None = None, overrides: list[str] | None = None) -> dict:
@@ -18,9 +21,10 @@ def load_config(path: str | Path | None = None, overrides: list[str] | None = No
     path = Path(path) if path else DEFAULT_CONFIG
     with open(path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    if path.resolve() != DEFAULT_CONFIG.resolve() and DEFAULT_CONFIG.exists():
+    default = DEFAULT_CONFIGS[cfg.get("mode", "solo")]
+    if path.resolve() != default.resolve() and default.exists():
         # 古いランの config.yaml に無い(後から増えた)キーは既定値で補う
-        with open(DEFAULT_CONFIG, encoding="utf-8") as f:
+        with open(default, encoding="utf-8") as f:
             cfg = _merge_defaults(yaml.safe_load(f), cfg)
     for ov in overrides or []:
         key, sep, raw = ov.partition("=")
