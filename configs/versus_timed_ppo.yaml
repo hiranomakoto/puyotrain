@@ -1,0 +1,28 @@
+# 時間のモデル(TimedVersus)での自己対戦の設定。configs/versus_ppo.yaml との違いだけを書く
+# (書いていないキーは versus_ppo.yaml の値)。
+# 使い方: python scripts/train_versus.py --config configs/versus_timed_ppo.yaml [--set ...]
+
+mode: versus
+rules: timed
+run_name: versus_timed
+
+# 同期ターン制の対戦の完成版から引き継ぐ。手ごとの特徴量(20 → 22個)と対局全体の情報(8 → 17個)の
+# 増えた分は影響ゼロで始めるので、学習開始時点の方策は引き継ぎ元と同じ。価値ヘッドも引き継ぐ
+init_from: runs/versus_main/checkpoints/step_0016470016.zip
+
+pool:
+  weights: {greedy: 1, solo: 1, past: 2}
+  solo: runs/versus_main/checkpoints/step_0016470016.zip   # 固定の相手(同期ターン制の対戦の完成版)
+  snapshot_every: 2000000
+  max_snapshots: 10
+
+eval:
+  seeds: {start: 0, count: 50}
+  max_turns: 300            # 時間のモデルでは使わない(打ち切りは timing の max_frames)
+  opponents:
+    - greedy
+    - solo                  # pool.solo(同期ターン制の対戦の完成版)
+    - runs/solo_afterstate_b/checkpoints/step_0019000000.zip   # 1人プレイの完成版
+
+video:
+  enabled: false            # 時間のモデルの動画は未対応

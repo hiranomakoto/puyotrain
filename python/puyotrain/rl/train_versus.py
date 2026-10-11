@@ -50,41 +50,58 @@ SCRIPT = "scripts/train_versus.py"
 # ---------------------------------------------------------------------- モデル
 
 
-def transfer_solo_weights(model, solo_path: str | Path) -> dict:
-    """1人プレイの重み(``policy.action_features``)を対戦用のモデルにコピーする。
+def transfer_weights(model, src_path: str | Path) -> dict:
+    """学習済みの重み(1人プレイ・同期ターン制の対戦)を、入力の多いモデルにコピーする。
 
     - 形が同じパラメータはそのままコピーする。
-    - 手ごとの点数づけの1層目は、入力が「特徴量13個 + 文脈」から「特徴量20個 + 文脈」に
-      増えるので、1人用の13個と文脈の部分だけコピーし、増えた7個の列は0にする。
-    - 相手の情報を足す ``opponent`` 層は1人用に無いので、0のまま(影響ゼロ)。
-    - 価値ヘッド(``mlp_extractor.value_net``、``value_net``)は引き継がない。
+    - 手ごとの点数づけの1層目(入力 = 手ごとの特徴量 + 文脈)は、特徴量が増えた分の列を0にして
+      広げる(元の特徴量の列と文脈の列はコピー)。手ごとの特徴量は、元の並びの後ろに足す決まり。
+    - 相手の情報を足す ``opponent`` 層(入力 = 相手の盤面の特徴 + 対局全体の情報)は、
+      元に無ければ0のまま。元にあって情報が増えていれば、増えた分の列を0にして広げる。
+    - 価値ヘッド(``mlp_extractor.value_net``、``value_net``)は、元が対戦用の重み(同じく勝敗を
+      予測する)ならコピーし、1人用の重み(得点を予測する)なら引き継がない。
 
+    増えた入力はどれも最初は影響ゼロなので、引き継いだ直後の方策は元の重みと同じ。
     戻り値: {"copied": [...], "widened": [...], "skipped": [...]}(パラメータ名)
     """
     import torch as th
     from sb3_contrib import MaskablePPO
 
-    src = MaskablePPO.load(str(solo_path), device="cpu").policy.state_dict()
+    src_model = MaskablePPO.load(str(src_path), device="cpu")
+    src = src_model.policy.state_dict()
+    src_versus = "versus_info" in src_model.observation_space.spaces
+    n_src = src_model.observation_space["action_features"].shape[1]
     dst = model.policy.state_dict()
     report: dict[str, list[str]] = {"copied": [], "widened": [], "skipped": []}
     for name, param in dst.items():
         s = src.get(name)
-        if name.startswith(("mlp_extractor.value_net", "value_net")) or s is None:
+        is_value = name.startswith(("mlp_extractor.value_net", "value_net"))
+        if s is None or (is_value and not src_versus):
             report["skipped"].append(name)
         elif s.shape == param.shape:
             dst[name] = s.clone()
             report["copied"].append(name)
         elif name.endswith("scorer.0.weight") and s.shape[0] == param.shape[0]:
-            n_ctx = s.shape[1] - NUM_ACTION_FEATURES
+            n_ctx = s.shape[1] - n_src
             w = th.zeros_like(param)
-            w[:, :NUM_ACTION_FEATURES] = s[:, :NUM_ACTION_FEATURES]
-            w[:, param.shape[1] - n_ctx:] = s[:, NUM_ACTION_FEATURES:]
+            w[:, :n_src] = s[:, :n_src]
+            w[:, param.shape[1] - n_ctx:] = s[:, n_src:]
+            dst[name] = w
+            report["widened"].append(name)
+        elif (name.endswith("opponent.weight") and s.shape[0] == param.shape[0]
+              and s.shape[1] < param.shape[1]):
+            w = th.zeros_like(param)
+            w[:, :s.shape[1]] = s
             dst[name] = w
             report["widened"].append(name)
         else:
             report["skipped"].append(name)
     model.policy.load_state_dict(dst)
     return report
+
+
+# 以前の名前(1人プレイの重みから対戦用へ)
+transfer_solo_weights = transfer_weights
 
 
 def build_pool(cfg: dict, device: str, snapshots: list[str] | None = None) -> OpponentPool:
@@ -96,8 +113,22 @@ def build_pool(cfg: dict, device: str, snapshots: list[str] | None = None) -> Op
     return pool
 
 
+def is_timed(cfg: dict) -> bool:
+    """時間のモデル(``rules: timed``)で学習・評価するか。"""
+    return cfg.get("rules", "sync") == "timed"
+
+
 def build_env(cfg: dict, pool: OpponentPool, seed: int, start_step: int = 0) -> VersusVecEnv:
     e = cfg["env"]
+    if is_timed(cfg):
+        from .timed_selfplay import TimedVersusVecEnv
+
+        return TimedVersusVecEnv(
+            n_envs=int(e["n_envs"]), pool=pool, safe_mask=bool(e["safe_mask"]),
+            attack_coef=float(e["attack_coef"]), potential_coef=float(e["potential_coef"]),
+            gamma=float(cfg["ppo"]["gamma"]), anneal_steps=int(e["anneal_steps"]), seed=seed,
+            start_step=start_step, timing=cfg.get("timing") or None,
+        )
     return VersusVecEnv(
         n_envs=int(e["n_envs"]), pool=pool, max_turns=int(e["max_turns"]),
         safe_mask=bool(e["safe_mask"]), attack_coef=float(e["attack_coef"]),
@@ -162,6 +193,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
     snap_every = int(cfg["pool"]["snapshot_every"])
     chash = config_hash(cfg)
     opponents = {opponent_label(s): eval_opponent(s, cfg, device) for s in cfg["eval"]["opponents"]}
+    timed = is_timed(cfg)  # 時間のモデルでは評価も時間のモデルで打つ(動画は未対応)
 
     class Checkpointer(BaseCallback):
         """一定ステップごとに保存・評価・動画。過去の自分をプールに加える。勝率を TensorBoard に出す。"""
@@ -183,6 +215,11 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                     if rs:
                         self.logger.record(f"rollout/win_rate_{cat}",
                                            float(np.mean([r == 1 for r in rs])))
+                if "max_chain" in buf[0]:  # 時間のモデル
+                    self.logger.record("rollout/max_chain_mean",
+                                       float(np.mean([e["max_chain"] for e in buf])))
+                    self.logger.record("rollout/seconds_mean",
+                                       float(np.mean([e["seconds"] for e in buf])))
             self.logger.record("train/aux_scale", env.anneal())
             self.logger.record("train/pool_past", len(pool.members["past"]))
 
@@ -196,7 +233,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
         def _on_training_end(self) -> None:
             if self.last_saved != self.model.num_timesteps:
                 self.checkpoint(final=True)
-            elif not self.last_had_videos and cfg["video"]["enabled"]:
+            elif not self.last_had_videos and cfg["video"]["enabled"] and not timed:
                 # 最後のチェックポイントが間引きで動画なしだった場合も、終了時の重みの動画は作る
                 name = f"step_{self.last_saved:010d}"
                 ckpt = run_dir / "checkpoints" / f"{name}.zip"
@@ -237,7 +274,8 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
             me = PPOAgent(ckpt, model=self.model, safe_mask=cfg["env"]["safe_mask"])
             metrics = {}
             for label, opp in opponents.items():
-                r = play_match(me, opp, seeds, int(cfg["eval"]["max_turns"]))
+                r = play_match(me, opp, seeds, int(cfg["eval"]["max_turns"]), timed=timed,
+                               timing=cfg.get("timing") or None)
                 r.pop("per_game")
                 metrics[label] = r
                 self.logger.record(f"eval/win_rate_vs_{label}", r["win_rate"])
@@ -247,7 +285,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
 
             video_every = max(1, int(cfg["video"].get("every_checkpoints", 1)))
             videos = []
-            if (cfg["video"]["enabled"] and videos_enabled
+            if (cfg["video"]["enabled"] and videos_enabled and not timed
                     and (final or (step // every) % video_every == 0)):
                 videos = self.write_videos(me, name)
             self.last_had_videos = bool(videos)
@@ -292,7 +330,7 @@ def train(cfg: dict, run_dir: Path | None = None) -> Path:
     env = build_env(cfg, pool, cfg["seed"])
     model = build_model(cfg, env, device, str(run_dir / "tb"))
     if cfg.get("init_from"):
-        rep = transfer_solo_weights(model, cfg["init_from"])
+        rep = transfer_weights(model, cfg["init_from"])
         print(f"init_from {cfg['init_from']}: copied {len(rep['copied'])}, "
               f"widened {len(rep['widened'])}, fresh {len(rep['skipped'])} tensors", flush=True)
     callback = build_callbacks(cfg, run_dir, pool, env, device, t0)

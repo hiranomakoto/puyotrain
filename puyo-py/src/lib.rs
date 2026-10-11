@@ -15,6 +15,11 @@ use puyo_core::field::FULL_MASK;
 use puyo_core::potential::potential_chain;
 use puyo_core::rules::{HEIGHT, NUM_ACTIONS, NUM_COLORS, WIDTH};
 use puyo_core::timed::{Phase, TimedVersus, Timing};
+use puyo_core::timed_features::{
+    NUM_TIMED_ACTION_FEATURES, NUM_TIMED_INFO, TIMED_ACTION_FEATURE_NAMES, TIMED_INFO_NAMES,
+};
+
+mod timed_batch;
 use puyo_core::{
     Action, ActionMask, Field, Game, Outcome, Pair, PlayerState, Puyo, Rng, StepError, TraceFrame,
     Versus, VersusStep,
@@ -724,6 +729,22 @@ impl PyTimedVersus {
         PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
     }
 
+    /// このプレイヤーの観測を、重みの種類 `kind`(solo / versus / timed)に合わせて作る。
+    /// `safe` なら行動マスクを自滅しない手に絞る(`TimedBatch.observe` の1局分と同じ)。
+    #[pyo3(signature = (player, kind, safe=true))]
+    fn observe<'py>(
+        &self,
+        py: Python<'py>,
+        player: usize,
+        kind: &str,
+        safe: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        check_player(player)?;
+        let kind = timed_batch::Kind::parse(kind)?;
+        let o = timed_batch::observe_one(&self.inner, player, kind, safe);
+        timed_batch::stack_observations(py, vec![o], kind, false)
+    }
+
     /// 同期ターン制の対戦用の特徴量(`Versus.versus_action_features` と同じ20個)。
     /// 予告おじゃまは「次に着地したとき降る」確定分だけを使う。
     fn versus_action_features<'py>(
@@ -900,6 +921,7 @@ fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGame>()?;
     m.add_class::<PyVersus>()?;
     m.add_class::<PyTimedVersus>()?;
+    m.add_class::<timed_batch::PyTimedBatch>()?;
     m.add("NUM_ACTIONS", NUM_ACTIONS)?;
     m.add("WIDTH", WIDTH)?;
     m.add("HEIGHT", HEIGHT)?;
@@ -913,5 +935,12 @@ fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("NUM_VERSUS_INFO", NUM_VERSUS_INFO)?;
     m.add("VERSUS_INFO_NAMES", VERSUS_INFO_NAMES.to_vec())?;
+    m.add("NUM_TIMED_ACTION_FEATURES", NUM_TIMED_ACTION_FEATURES)?;
+    m.add(
+        "TIMED_ACTION_FEATURE_NAMES",
+        TIMED_ACTION_FEATURE_NAMES.to_vec(),
+    )?;
+    m.add("NUM_TIMED_INFO", NUM_TIMED_INFO)?;
+    m.add("TIMED_INFO_NAMES", TIMED_INFO_NAMES.to_vec())?;
     Ok(())
 }

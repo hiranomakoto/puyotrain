@@ -2,6 +2,8 @@
 # 使い方: python scripts/train_versus.py [--set ...]
 
 mode: versus
+rules: sync                 # sync(同期ターン制)/ timed(時間のモデル。configs/versus_timed_ppo.yaml)
+timing: {}                  # 時間のモデルの定数の上書き(例: {vanish: 50})。空なら既定値(ぷよぷよ通の目安)
 run_name: versus_ppo        # 出力先: <output_dir>/<run_name>-<日時>/
 output_dir: runs
 seed: 0

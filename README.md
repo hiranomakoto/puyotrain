@@ -464,7 +464,22 @@ print(g.winner, g.now / 60, "秒")
 ```
 
 エージェントは `Versus` と同じメソッド名(`observation(p)`、`legal_actions(p)` など)で打てる。
+学習済みの重みは `observe(p, kind)`(kind は重みに合わせて solo / versus / timed)の観測で打つ。
 勝率の測定は `python scripts/match.py A B --timed`。
+
+時間のモデルでの自己対戦の学習:
+
+```bash
+python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir runs/versus_timed
+```
+
+- 観測: 手ごとの特徴量22個(`TIMED_ACTION_FEATURE_NAMES`。この手にかかる時間、相手の連鎖より先に終わるか
+  など)と対局全体の情報17個(`TIMED_INFO_NAMES`。予告の確定・未確定、相手の連鎖の残りと送ってくる量の
+  見込み、相手の連鎖が終わるまでの時間など)。
+- 学習環境 `TimedVersusVecEnv` は、学習側が操作待ちになるまで全局を進める(途中の相手の手もまとめて求める)。
+  時刻の進行・観測・greedy の手は `TimedBatch`(Rust)で全局分を並列に計算する。
+- 同期ターン制の対戦の重みから引き継ぎ、増えた入力は影響ゼロで始める(価値ヘッドも引き継ぐ)。
+- 評価も時間のモデルで打つ。動画は未対応。
 
 ### レーティング(Elo)
 

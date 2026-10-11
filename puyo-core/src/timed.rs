@@ -155,6 +155,8 @@ pub struct TimedPlayer {
     pub moves: u64,
     /// この対局の最大連鎖数。
     pub max_chain: u32,
+    /// この対局で連鎖が生んだおじゃまの合計(相殺に使った分も含む)。
+    pub attack_total: u64,
     /// この手で始まった連鎖の攻撃に全消しボーナスを乗せたか。
     bonus_used: bool,
 }
@@ -168,6 +170,7 @@ impl TimedPlayer {
             phase: Phase::Ready,
             moves: 0,
             max_chain: 0,
+            attack_total: 0,
             bonus_used: false,
         }
     }
@@ -369,6 +372,7 @@ impl TimedVersus {
             p.bonus_used = true;
         }
         let mut attack = attack_ojama(score, &mut p.state.carry, bonus);
+        p.attack_total += attack as u64;
         // 自分の予告を相殺(確定分 → 未確定分)し、残りを相手の未確定の予告へ
         attack = offset(attack, &mut p.state.pending);
         attack = offset(attack, &mut p.unconfirmed);

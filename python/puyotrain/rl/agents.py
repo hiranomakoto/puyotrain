@@ -12,10 +12,10 @@ from typing import Optional, Union
 
 import numpy as np
 
-from .._puyo import Game, Versus
+from .._puyo import NUM_TIMED_ACTION_FEATURES, Game, TimedVersus, Versus
 from ..envs import solo_observation, versus_observation
 
-State = Union[Game, Versus]
+State = Union[Game, Versus, TimedVersus]
 
 
 def _mask(state: State, player: int) -> int:
@@ -109,6 +109,10 @@ class PPOAgent(Agent):
     モデルの観測に ``versus_info`` があれば(対戦用に学習した重み)、対戦用の特徴量で打つ。
     この重みは対戦専用(1人用の ``Game`` では打てない)。それ以外の重みは対戦でも1人用と
     同じ入力(予告おじゃまを考えない特徴量)で打つ。
+
+    時間のモデル(``TimedVersus``)では、重みの種類 ``obs_kind``(solo / versus / timed)に
+    合わせた観測を ``TimedVersus.observe`` で作る。時間のモデル用の重み(timed)は
+    ``TimedVersus`` 専用。
     """
 
     kind = "ppo"
@@ -133,9 +137,25 @@ class PPOAgent(Agent):
         spaces = model.observation_space.spaces
         self.action_features = "action_features" in spaces
         self.versus_features = "versus_info" in spaces
+        self.timed_features = (self.action_features and spaces["action_features"].shape[1]
+                               == NUM_TIMED_ACTION_FEATURES)
+        if self.timed_features:
+            self.obs_kind: Optional[str] = "timed"
+        elif self.versus_features:
+            self.obs_kind = "versus"
+        elif self.action_features:
+            self.obs_kind = "solo"
+        else:
+            self.obs_kind = None
 
     def observe(self, state: State, player: int = 0) -> dict:
         """このモデルが学習したときと同じ形の観測を作る。"""
+        if isinstance(state, TimedVersus):
+            if self.obs_kind is None:
+                return state.observation(player)
+            return state.observe(player, self.obs_kind, self.safe_mask)
+        if self.timed_features:
+            raise ValueError("this checkpoint was trained for the time-based rules (TimedVersus)")
         if isinstance(state, Game):
             if self.versus_features:
                 raise ValueError("this checkpoint was trained for versus games only")
@@ -157,6 +177,10 @@ class PPOAgent(Agent):
         組み立てが無い分速い)。確率的なときは ``predict`` を使う。
         """
         obs = {k: np.stack([o[k] for o in observations]) for k in observations[0]}
+        return self.act_stacked(obs)
+
+    def act_stacked(self, obs: dict) -> list[int]:
+        """``act_batch`` と同じ。観測は件数の次元を先頭に持つ配列の dict(``TimedBatch.observe``)。"""
         masks = obs["action_mask"].astype(bool)
         if self.deterministic:
             return self._argmax_actions(obs, masks)

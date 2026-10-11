@@ -31,7 +31,7 @@ pub const ACTION_FEATURE_NAMES: [&str; NUM_ACTION_FEATURES] = [
 
 /// 得点を 0〜1 程度に収める(ln(1 + 10万点) ≒ 11.5)。
 #[inline]
-fn log_score(score: u32) -> f32 {
+pub(crate) fn log_score(score: u32) -> f32 {
     (score as f32).ln_1p() / 12.0
 }
 
@@ -143,7 +143,7 @@ pub const VERSUS_INFO_NAMES: [&str; NUM_VERSUS_INFO] = [
 
 /// おじゃまの個数を 0〜1 程度に収める(1回の降下の上限30個で割る)。
 #[inline]
-fn ojama_scale(n: u32) -> f32 {
+pub(crate) fn ojama_scale(n: u32) -> f32 {
     n as f32 / MAX_OJAMA_DROP as f32
 }
 
