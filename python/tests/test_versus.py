@@ -146,6 +146,71 @@ def test_play_games_batched_matches_sequential_for_deterministic_agents(solo_ckp
         assert m["moves"] == g["turns"]
 
 
+def test_fast_act_batch_matches_predict(tmp_path, solo_ckpt):
+    """act_batch の高速な道(直接 argmax)は、SB3 の predict(決定的)と同じ手を返す。"""
+    from puyotrain.rl.train_versus import build_env, build_model, build_pool, transfer_solo_weights
+
+    cfg = versus_cfg(tmp_path, solo_ckpt)
+    model = build_model(cfg, build_env(cfg, build_pool(cfg, "cpu"), 0), "cpu", None)
+    transfer_solo_weights(model, solo_ckpt)
+    model.policy.features_extractor.opponent.weight.data.normal_(0, 0.1)  # 相手の情報も効かせる
+    for agent in (PPOAgent(solo_ckpt), PPOAgent("unused.zip", model=model)):
+        v = Versus(9)
+        rng = np.random.default_rng(3)
+        for _ in range(25):
+            obs = [agent.observe(v, p) for p in (0, 1)]
+            stacked = {k: np.stack([o[k] for o in obs]) for k in obs[0]}
+            expected, _ = agent.model.predict(stacked, action_masks=stacked["action_mask"]
+                                              .astype(bool), deterministic=True)
+            assert agent.act_batch(obs) == [int(a) for a in expected]
+            if v.is_over:
+                break
+            v.step(*[int(rng.choice(np.flatnonzero(v.action_mask(p)))) for p in (0, 1)])
+
+
+def test_stacked_past_opponents_match_individual_inference(tmp_path, solo_ckpt):
+    """過去の自分を束ねた推論で選んだ手は、1人ずつ推論したときの最高点の手(同点を含む)。
+
+    置いた結果が同じになる手どうしは特徴量が同じで点数も同点になり、同点のどれを選ぶかは
+    計算順の違い(1e-5 程度)で変わるので、手そのものではなく点数で比べる。
+    """
+    from puyotrain.rl.train_versus import build_env, build_model, build_pool, transfer_solo_weights
+
+    cfg = versus_cfg(tmp_path, solo_ckpt)
+    paths = []
+    for k in range(3):
+        model = build_model(cfg, build_env(cfg, build_pool(cfg, "cpu"), 0), "cpu", None)
+        transfer_solo_weights(model, solo_ckpt)
+        th.manual_seed(k)
+        model.policy.features_extractor.opponent.weight.data.normal_(0, 0.1)  # 3つとも違う重み
+        model.policy.features_extractor.scorer[-1].weight.data.normal_(0, 1.0)
+        paths.append(tmp_path / f"step_{k}.zip")
+        model.save(paths[-1])
+    pool = OpponentPool({"past": 1}, None, device="cpu")
+    for p in paths:
+        pool.add_snapshot(p)
+    env = VersusVecEnv(12, pool, max_turns=200, safe_mask=True, attack_coef=0.0,
+                       potential_coef=0.0, gamma=0.99, anneal_steps=0, seed=4)
+    env.reset()
+    rng = np.random.default_rng(4)
+    checked = 0
+    for _ in range(20):
+        got = env._opponent_actions()
+        for i, (_, agent) in enumerate(env.opponents):
+            obs = agent.observe(env.games[i], 1 - env.sides[i])
+            policy = agent.model.policy
+            with th.no_grad():
+                feats = policy.extract_features({k: th.as_tensor(v[None]) for k, v in obs.items()})
+                logits = policy.action_net(policy.mlp_extractor.forward_actor(feats))[0]
+            legal = obs["action_mask"].astype(bool)
+            assert legal[got[i]]
+            assert logits[got[i]] >= logits[th.as_tensor(legal)].max() - 1e-4
+            checked += 1
+        masks = np.stack(env.env_method("action_masks"))
+        env.step(np.array([rng.choice(np.flatnonzero(m)) for m in masks]))
+    assert env._stacked is not None and checked == 240
+
+
 def test_fit_elo_orders_players_and_anchors():
     from puyotrain.rl.league import expected_score, fit_elo
 

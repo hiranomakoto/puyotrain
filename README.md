@@ -475,6 +475,8 @@ docker compose run --rm train python scripts/train_versus.py --run-dir runs/vers
   `versus_info`(双方の予告おじゃま、潜在連鎖、相手の高さ)。相手の盤面は自分と同じ CNN に通す。
 - 相手: 対局ごとに `pool.weights` の重みで greedy / 1人プレイの重み(`pool.solo`)/ 過去の自分
   (`pool.snapshot_every` ごとに追加、最大 `pool.max_snapshots`)から選ぶ。学習側の席も対局ごとにランダム。
+  相手の推論は、同じ相手どうしでまとめて方策ネットに直接流し、過去の自分は重みを束ねて
+  (`torch.func.vmap`)全員分を1回で行う。既定の64並列で約1,950 steps/s(RTX 4060 Laptop)。
 - 報酬: 勝ち +1 / 負け −1。補助報酬(生んだおじゃま × `env.attack_coef`、潜在連鎖の整形
   × `env.potential_coef`)は `env.anneal_steps` で 0 まで直線的に減らす。
 - 評価: チェックポイントごとに `eval.opponents`(既定は greedy と1人プレイの重み)と

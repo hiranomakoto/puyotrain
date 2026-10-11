@@ -11,7 +11,7 @@ device: auto                # auto / cpu / cuda
 init_from: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
 
 env:
-  n_envs: 16                # 並列に進める対局数
+  n_envs: 64                # 並列に進める対局数(16 → 64 で推論1回あたりの局数が増え、約2倍速い)
   max_turns: 300            # この手数で打ち切り(勝敗なし)
   safe_mask: true           # 自滅する手を禁止する(予告おじゃまの降下は考えない)
   attack_coef: 0.01         # 補助報酬: この手の連鎖で生んだおじゃま1個あたり
@@ -28,7 +28,7 @@ pool:
 ppo:
   total_timesteps: 30000000
   learning_rate: 1.0e-4
-  n_steps: 256
+  n_steps: 64               # 64並列 × 64 = 1回の更新で4,096ステップ(16並列 × 256 と同じ)
   batch_size: 512
   n_epochs: 4
   gamma: 0.99

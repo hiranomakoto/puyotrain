@@ -3,12 +3,14 @@
 - 対局ごとに、相手を ``OpponentPool`` から選ぶ(greedy、1人プレイの完成版、過去の自分)。
 - 学習側の席(0 か 1)も対局ごとにランダムに選ぶ。
 - 相手が PPO の重みのときは、同じ相手と打っている環境の分をまとめて1回で推論する。
+  過去の自分(形が同じ方策)は、重みを束ねて全員分を1回で推論する(``StackedActors``)。
 """
 
 from __future__ import annotations
 
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,6 +58,52 @@ class OpponentPool:
         return cat, group[self.rng.integers(len(group))]
 
 
+class StackedActors:
+    """形が同じ複数の方策(過去の自分)の重みを束ね、``torch.func.vmap`` で1回の推論にまとめる。
+
+    ``logits(obs)`` の ``obs`` は各キーが ``(K, B, ...)``(K = 方策の数、B = 1方策あたりの局面数)。
+    方策ごとに局面数が違うときは、呼び出し側で B にそろえて(余りは適当な局面で埋めて)渡す。
+    """
+
+    def __init__(self, agents: list[PPOAgent]):
+        import copy
+
+        import torch as th
+        from torch import nn
+        from torch.func import functional_call, stack_module_state, vmap
+
+        class Actor(nn.Module):
+            """方策ネットの行動ロジットまで(価値は計算しない)。"""
+
+            def __init__(self, policy):
+                super().__init__()
+                self.policy = policy
+
+            def forward(self, obs):
+                f = self.policy.extract_features(obs)
+                if isinstance(f, tuple):
+                    f = f[0]
+                return self.policy.action_net(self.policy.mlp_extractor.forward_actor(f))
+
+        actors = [Actor(a.model.policy) for a in agents]
+        self.device = agents[0].model.policy.device
+        self.params, self.buffers = stack_module_state(actors)
+        base = copy.deepcopy(actors[0]).to("meta")
+
+        def call(params, buffers, obs):
+            return functional_call(base, (params, buffers), (obs,))
+
+        self._fn = vmap(call)
+        self._th = th
+        self.index = {id(a): k for k, a in enumerate(agents)}
+
+    def logits(self, obs: dict[str, np.ndarray]):
+        th = self._th
+        with th.no_grad():
+            t = {k: th.as_tensor(v, device=self.device) for k, v in obs.items()}
+            return self._fn(self.params, self.buffers, t)
+
+
 class VersusVecEnv(VecEnv):
     """自己対戦の並列環境(``n_envs`` 局を同時に進める)。
 
@@ -93,6 +141,8 @@ class VersusVecEnv(VecEnv):
         self.masks = [None] * n_envs
         self.actions: Optional[np.ndarray] = None
         self.timer = None  # プロファイリング用(profiling.SectionTimer)。相手の推論時間を測る
+        self._stacked_key: tuple = ()
+        self._stacked: Optional[StackedActors] = None
 
     # ------------------------------------------------------------------ 進行
 
@@ -122,6 +172,23 @@ class VersusVecEnv(VecEnv):
     def _stack(self, observations: list[dict]) -> dict:
         return {k: np.stack([o[k] for o in observations]) for k in observations[0]}
 
+    def _stacked_past(self) -> Optional[StackedActors]:
+        """過去の自分(2人以上)を束ねたもの。プールが変わったら作り直す。"""
+        past = self.pool.members["past"]
+        key = tuple(id(a) for a in past)
+        if key != self._stacked_key:
+            self._stacked_key = key
+            self._stacked = StackedActors(past) if len(past) >= 2 else None
+        return self._stacked
+
+    @contextmanager
+    def _timed(self, name: str):
+        if self.timer is None:
+            yield
+        else:
+            with self.timer.section(name, sync=True):
+                yield
+
     def _opponent_actions(self) -> list[int]:
         acts: list[int] = [0] * self.num_envs
         batched: dict[int, list[int]] = defaultdict(list)
@@ -130,14 +197,38 @@ class VersusVecEnv(VecEnv):
                 batched[id(agent)].append(i)
             else:
                 acts[i] = agent.act(self.games[i], 1 - self.sides[i])
+        stacked = self._stacked_past()
+        if stacked is not None:
+            # 過去の自分は全員分を1回の推論で(方策ごとの局面数を B にそろえて束ねる)
+            groups = {k: batched.pop(aid) for aid, k in stacked.index.items() if aid in batched}
+            if groups:
+                obs = {k: [self.opponents[idxs[0]][1].observe(self.games[i], 1 - self.sides[i])
+                           for i in idxs] for k, idxs in groups.items()}
+                n_models = len(stacked.index)
+                width = max(len(v) for v in obs.values())
+                fill = next(iter(obs.values()))[0]
+                arrays = {key: np.empty((n_models, width, *np.shape(val)),
+                                        dtype=np.asarray(val).dtype)
+                          for key, val in fill.items()}
+                for k in range(n_models):
+                    rows = obs.get(k, [])
+                    for b in range(width):
+                        o = rows[b] if b < len(rows) else fill
+                        for key in arrays:
+                            arrays[key][k, b] = o[key]
+                with self._timed("opp_infer"):
+                    logits = stacked.logits(arrays)
+                    masks = stacked._th.as_tensor(arrays["action_mask"].astype(bool),
+                                                  device=logits.device)
+                    choice = logits.masked_fill(~masks, -stacked._th.inf).argmax(-1).cpu().numpy()
+                for k, idxs in groups.items():
+                    for b, i in enumerate(idxs):
+                        acts[i] = int(choice[k, b])
         for idxs in batched.values():
             agent = self.opponents[idxs[0]][1]
-            obs = [agent.observe(self.games[i], 1 - self.sides[i]) for i in idxs]
-            if self.timer is not None:
-                with self.timer.section("opp_infer", sync=True):
-                    batch_acts = agent.act_batch(obs)
-            else:
-                batch_acts = agent.act_batch(obs)
+            obs_list = [agent.observe(self.games[i], 1 - self.sides[i]) for i in idxs]
+            with self._timed("opp_infer"):
+                batch_acts = agent.act_batch(obs_list)
             for i, a in zip(idxs, batch_acts):
                 acts[i] = a
         return acts

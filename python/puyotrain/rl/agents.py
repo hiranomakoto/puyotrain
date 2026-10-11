@@ -150,11 +150,31 @@ class PPOAgent(Agent):
         return int(action)
 
     def act_batch(self, observations: list[dict]) -> list[int]:
-        """複数局面をまとめて推論する(評価の高速化用)。"""
+        """複数局面をまとめて推論する(評価・自己対戦の相手用)。
+
+        決定的なとき(既定)は SB3 の ``predict`` を通さず、方策ネットに直接流して
+        マスク付きの argmax を取る(``predict`` と同じ手。呼び出しごとの前処理・分布の
+        組み立てが無い分速い)。確率的なときは ``predict`` を使う。
+        """
         obs = {k: np.stack([o[k] for o in observations]) for k in observations[0]}
         masks = obs["action_mask"].astype(bool)
-        actions, _ = self.model.predict(obs, action_masks=masks, deterministic=self.deterministic)
+        if self.deterministic:
+            return self._argmax_actions(obs, masks)
+        actions, _ = self.model.predict(obs, action_masks=masks, deterministic=False)
         return [int(a) for a in actions]
+
+    def _argmax_actions(self, obs: dict, masks: np.ndarray) -> list[int]:
+        import torch as th
+
+        policy = self.model.policy
+        with th.no_grad():
+            t = {k: th.as_tensor(v, device=policy.device) for k, v in obs.items()}
+            features = policy.extract_features(t)
+            if isinstance(features, tuple):  # 方策と価値で特徴抽出を共有していない場合
+                features = features[0]
+            logits = policy.action_net(policy.mlp_extractor.forward_actor(features))
+            logits = logits.masked_fill(~th.as_tensor(masks, device=policy.device), -th.inf)
+            return logits.argmax(dim=1).tolist()
 
     def describe(self) -> dict:
         return {"type": self.kind, "checkpoint": str(self.path), "step": self.step}
