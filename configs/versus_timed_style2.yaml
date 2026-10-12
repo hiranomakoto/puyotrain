@@ -1,0 +1,58 @@
+# 「大連鎖で魅せて勝つ」学習の分岐(versus_timed_style の1100万ステップから)。報酬の差を広げる。
+# 使い方: python scripts/train_versus.py --config configs/versus_timed_style2.yaml --run-dir runs/versus_timed_style2
+#
+# versus_timed_style からの変更(650万ステップ以降、魅せ方の指標が横ばいになったため):
+# - 勝ちの報酬: 3連鎖以下 +0.3 → +0.1、10連鎖以上 +1.5 → +2.0(小さく勝つ価値を下げ、大連鎖で勝つ価値を上げる)
+# - 潜在連鎖の整形を残す割合: 0.2 → 0.4(組む途中の後押しを強める)
+# - 返しの報酬(相殺30個あたり +0.1)、負け −1 は同じ
+# 評価の相手に、分岐元(origin、評価専用)を加えた。
+
+mode: versus
+rules: timed
+run_name: versus_timed_style2
+init_from: runs/versus_timed_style/checkpoints/step_0011000064.zip
+
+env:
+  n_envs: 128
+  reward: style
+  attack_coef: 0.0
+  potential_coef: 0.05
+  anneal_steps: 0           # 減らさない(potential_floor の割合で残す)
+  style:
+    big_chain: 8
+    counter_min_chain: 5
+    win_low_chain: 3
+    win_high_chain: 10
+    win_min: 0.1
+    win_max: 2.0
+    counter_coef: 0.1
+    potential_floor: 0.4
+
+ppo:
+  total_timesteps: 20000000
+  batch_size: 1024
+
+pool:
+  weights: {greedy: 1, sync_versus: 1, solo_play: 1, peer: 0, origin: 0, past: 2}
+  solo: null
+  fixed:
+    sync_versus: runs/versus_main/checkpoints/step_0016470016.zip
+    solo_play: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+    peer: runs/versus_timed_b/checkpoints/step_0005000064.zip   # 評価専用(重み0)。拮抗した相手
+    origin: runs/versus_timed_style/checkpoints/step_0011000064.zip   # 評価専用(重み0)。分岐元
+  initial_past:             # versus_timed_style の過去の自分
+    - runs/versus_timed_style/checkpoints/step_0006000000.zip
+    - runs/versus_timed_style/checkpoints/step_0008000000.zip
+    - runs/versus_timed_style/checkpoints/step_0010000000.zip
+  snapshot_every: 2000000
+  max_snapshots: 10
+
+eval:
+  seeds: {start: 0, count: 50}
+  opponents: [greedy, sync_versus, solo_play, peer, origin]
+
+video:
+  enabled: true
+  every_checkpoints: 4
+  timed_speed: 1.0
+  opponents: [peer, solo_play, sync_versus]   # 大連鎖の撃ち合い・返し・潰しへの対応が見える相手
