@@ -5,6 +5,7 @@
 //! - `"solo"`: 1人用の手ごとの特徴量(13個)
 //! - `"versus"`: 同期ターン制の対戦用(手ごと20個 + `versus_info` 8個。降る予告は確定分)
 //! - `"timed"`: 時間のモデル用(手ごと22個 + `versus_info` 17個)
+//! - `"look"`: 時間のモデル用 + 先読み(手ごと25個 = timed の22個 + 先読みの3個、`versus_info` 17個)
 //!
 //! `safe` なら行動マスクを、手ごとの特徴量の legal・dead・survivable から作った
 //! 「自滅しない手」に絞る(該当が無ければ合法手のまま。Python の `_with_options` と同じ)。
@@ -19,6 +20,7 @@ use puyo_core::afterstate::{
     action_features, versus_action_features, versus_info, NUM_ACTION_FEATURES,
     NUM_VERSUS_ACTION_FEATURES, NUM_VERSUS_INFO,
 };
+use puyo_core::lookahead::{lookahead_features, NUM_LOOK_FEATURES};
 use puyo_core::rules::NUM_ACTIONS;
 use puyo_core::timed::{TimedVersus, Timing};
 use puyo_core::timed_features::{
@@ -38,7 +40,11 @@ pub(crate) enum Kind {
     Solo,
     Versus,
     Timed,
+    Look,
 }
+
+/// 先読みつきの手ごとの特徴量の数(timed の22個 + 先読みの3個)。
+pub(crate) const NUM_LOOK_ACTION_FEATURES: usize = NUM_TIMED_ACTION_FEATURES + NUM_LOOK_FEATURES;
 
 impl Kind {
     pub(crate) fn parse(s: &str) -> PyResult<Kind> {
@@ -46,8 +52,9 @@ impl Kind {
             "solo" => Ok(Kind::Solo),
             "versus" => Ok(Kind::Versus),
             "timed" => Ok(Kind::Timed),
+            "look" => Ok(Kind::Look),
             _ => Err(PyValueError::new_err(format!(
-                "kind must be solo / versus / timed: {s}"
+                "kind must be solo / versus / timed / look: {s}"
             ))),
         }
     }
@@ -57,6 +64,7 @@ impl Kind {
             Kind::Solo => NUM_ACTION_FEATURES,
             Kind::Versus => NUM_VERSUS_ACTION_FEATURES,
             Kind::Timed => NUM_TIMED_ACTION_FEATURES,
+            Kind::Look => NUM_LOOK_ACTION_FEATURES,
         }
     }
 
@@ -64,7 +72,7 @@ impl Kind {
         match self {
             Kind::Solo => 0,
             Kind::Versus => NUM_VERSUS_INFO,
-            Kind::Timed => NUM_TIMED_INFO,
+            Kind::Timed | Kind::Look => NUM_TIMED_INFO,
         }
     }
 }
@@ -114,12 +122,21 @@ pub(crate) fn observe_one(g: &TimedVersus, i: usize, kind: Kind, safe: bool) -> 
                 .flatten()
                 .copied()
                 .collect(),
+            Kind::Look => {
+                let timed = timed_action_features(g, i);
+                let look = lookahead_features(&g.player(i).state.field, g.visible_pairs(i));
+                timed
+                    .iter()
+                    .zip(look.iter())
+                    .flat_map(|(t, l)| t.iter().chain(l.iter()).copied())
+                    .collect()
+            }
         }
     };
     let info = match kind {
         Kind::Solo => Vec::new(),
         Kind::Versus => versus_info(&me, &opp).to_vec(),
-        Kind::Timed => timed_info(g, i).to_vec(),
+        Kind::Timed | Kind::Look => timed_info(g, i).to_vec(),
     };
     let mut mask = mask_vec(g.legal_actions(i));
     if safe && ready {

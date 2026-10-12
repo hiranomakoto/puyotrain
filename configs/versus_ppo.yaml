@@ -52,6 +52,7 @@ policy:                     # init_from の重みと同じ形にする
   piece_planes: true
   action_hidden: [64, 64]
   net_arch: [128, 128]      # 価値ヘッドの隠れ層
+  lookahead: false          # 時間のモデルで、手ごとの特徴量に先読み(3手先まで)の3個を足す
 
 checkpoint:
   every_steps: 500000

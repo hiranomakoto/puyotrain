@@ -12,7 +12,13 @@ from typing import Optional, Union
 
 import numpy as np
 
-from .._puyo import NUM_TIMED_ACTION_FEATURES, Game, TimedVersus, Versus
+from .._puyo import (
+    NUM_LOOK_ACTION_FEATURES,
+    NUM_TIMED_ACTION_FEATURES,
+    Game,
+    TimedVersus,
+    Versus,
+)
 from ..envs import solo_observation, versus_observation
 
 State = Union[Game, Versus, TimedVersus]
@@ -137,10 +143,12 @@ class PPOAgent(Agent):
         spaces = model.observation_space.spaces
         self.action_features = "action_features" in spaces
         self.versus_features = "versus_info" in spaces
-        self.timed_features = (self.action_features and spaces["action_features"].shape[1]
-                               == NUM_TIMED_ACTION_FEATURES)
-        if self.timed_features:
-            self.obs_kind: Optional[str] = "timed"
+        n_features = spaces["action_features"].shape[1] if self.action_features else 0
+        self.timed_features = n_features in (NUM_TIMED_ACTION_FEATURES, NUM_LOOK_ACTION_FEATURES)
+        if n_features == NUM_LOOK_ACTION_FEATURES:
+            self.obs_kind: Optional[str] = "look"
+        elif self.timed_features:
+            self.obs_kind = "timed"
         elif self.versus_features:
             self.obs_kind = "versus"
         elif self.action_features:

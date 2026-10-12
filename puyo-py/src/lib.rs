@@ -775,7 +775,7 @@ impl PyTimedVersus {
         PyArray1::from_vec(py, flat).reshape([NUM_ACTIONS, NUM_ACTION_FEATURES])
     }
 
-    /// このプレイヤーの観測を、重みの種類 `kind`(solo / versus / timed)に合わせて作る。
+    /// このプレイヤーの観測を、重みの種類 `kind`(solo / versus / timed / look)に合わせて作る。
     /// `safe` なら行動マスクを自滅しない手に絞る(`TimedBatch.observe` の1局分と同じ)。
     #[pyo3(signature = (player, kind, safe=true))]
     fn observe<'py>(
@@ -1002,6 +1002,18 @@ fn _puyo(m: &Bound<'_, PyModule>) -> PyResult<()> {
         TIMED_ACTION_FEATURE_NAMES.to_vec(),
     )?;
     m.add("NUM_TIMED_INFO", NUM_TIMED_INFO)?;
+    m.add(
+        "NUM_LOOK_ACTION_FEATURES",
+        timed_batch::NUM_LOOK_ACTION_FEATURES,
+    )?;
+    m.add(
+        "LOOK_ACTION_FEATURE_NAMES",
+        TIMED_ACTION_FEATURE_NAMES
+            .iter()
+            .chain(puyo_core::lookahead::LOOK_FEATURE_NAMES.iter())
+            .copied()
+            .collect::<Vec<_>>(),
+    )?;
     m.add("TIMED_INFO_NAMES", TIMED_INFO_NAMES.to_vec())?;
     Ok(())
 }

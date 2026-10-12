@@ -81,8 +81,7 @@
 
 ## 進め方
 
-1. `versus_timed_drill`(`configs/versus_timed_drill.yaml`)の学習: 大連鎖を短い手数で組む力を、組む練習の対局で
-   鍛える → 練習の対局での最大連鎖(`eval/drill_*`)と、対戦での勝ち方の指標(決め手の連鎖、8連鎖以上で
-   決めた割合、返し勝ち)・勝率で評価する。
+1. `versus_timed_look`(`configs/versus_timed_look.yaml`)の学習: 先読み(3手先まで)の特徴量を見せて、短い手数で
+   大連鎖を組めるようにする → 練習の対局での最大連鎖(`eval/drill_*`)と、対戦での勝ち方の指標・勝率で評価する。
 2. 時間のモデルでの総当たりの Elo(`scripts/league.py` は今は同期ターン制のみ)、相手の推論の回数を減らす高速化。
 2. 結果と方針の変更は [versus_log.md](versus_log.md) に追記する。

@@ -1,0 +1,67 @@
+# 先読みの特徴量を加えた「大連鎖で魅せて勝つ」学習(versus_timed_style の1100万ステップから分岐)。
+# 使い方: python scripts/train_versus.py --config configs/versus_timed_look.yaml --run-dir runs/versus_timed_look
+#
+# 3手先まで全部試す探索は、練習の対局(32手)で AI よりずっと大きな連鎖の種を育てた(平均9.2、AI は約7)。
+# その先読みの結果を手ごとの特徴量にして AI に見せる(policy.lookahead、観測の種類 look)。
+# - 手ごとに3個: 3手先までに育つ種の最大・3手先までに撃てる連鎖の最大・3手先まで生き残れるか
+#   (2手目は上位4手だけを3手目まで展開する)
+# - 引き継ぎ: 増えた3列は影響ゼロで始めるので、学習開始時点の方策は分岐元と同じ
+# - 報酬・練習の対局は versus_timed_drill と同じ(対局の半分が練習の対局、32手)
+
+mode: versus
+rules: timed
+run_name: versus_timed_look
+init_from: runs/versus_timed_style/checkpoints/step_0011000064.zip
+
+env:
+  n_envs: 128
+  reward: style
+  attack_coef: 0.0
+  potential_coef: 0.05
+  anneal_steps: 0           # 減らさない(potential_floor の割合で残す)
+  style:
+    big_chain: 8
+    counter_min_chain: 5
+    win_low_chain: 3
+    win_high_chain: 10
+    win_min: 0.1
+    win_max: 2.0
+    counter_coef: 0.1
+    potential_floor: 0.4
+  drill:
+    fraction: 0.5           # 学習中の対局のうち、練習の対局の割合
+    moves: 32               # 練習の対局の手数(対戦で本線を撃つまでの手数の目安)
+    low_chain: 3
+    high_chain: 10
+
+ppo:
+  total_timesteps: 20000000
+  batch_size: 1024
+
+policy:
+  lookahead: true           # 手ごとの特徴量に先読みの3個を足す(観測の種類 look)
+
+pool:
+  weights: {greedy: 1, sync_versus: 1, solo_play: 1, peer: 0, origin: 0, past: 2}
+  solo: null
+  fixed:
+    sync_versus: runs/versus_main/checkpoints/step_0016470016.zip
+    solo_play: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+    peer: runs/versus_timed_b/checkpoints/step_0005000064.zip   # 評価専用(重み0)。拮抗した相手
+    origin: runs/versus_timed_style/checkpoints/step_0011000064.zip   # 評価専用(重み0)。分岐元
+  initial_past:             # versus_timed_style の過去の自分
+    - runs/versus_timed_style/checkpoints/step_0006000000.zip
+    - runs/versus_timed_style/checkpoints/step_0008000000.zip
+    - runs/versus_timed_style/checkpoints/step_0010000000.zip
+  snapshot_every: 2000000
+  max_snapshots: 10
+
+eval:
+  seeds: {start: 0, count: 50}
+  opponents: [greedy, sync_versus, solo_play, peer, origin]
+
+video:
+  enabled: true
+  every_checkpoints: 4
+  timed_speed: 1.0
+  opponents: [peer, solo_play, sync_versus]   # 大連鎖の撃ち合い・返し・潰しへの対応が見える相手

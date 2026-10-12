@@ -16,6 +16,7 @@ pub mod chain;
 pub mod color;
 pub mod field;
 pub mod game;
+pub mod lookahead;
 pub mod phase;
 pub mod potential;
 pub mod rules;

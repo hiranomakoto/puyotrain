@@ -152,6 +152,7 @@ def build_env(cfg: dict, pool: OpponentPool, seed: int, start_step: int = 0) -> 
             gamma=float(cfg["ppo"]["gamma"]), anneal_steps=int(e["anneal_steps"]), seed=seed,
             start_step=start_step, timing=cfg.get("timing") or None,
             reward=e.get("reward", "win"), style=style_config(cfg), drill=drill_config(cfg),
+            obs_kind="look" if cfg["policy"].get("lookahead") else "timed",
         )
     return VersusVecEnv(
         n_envs=int(e["n_envs"]), pool=pool, max_turns=int(e["max_turns"]),

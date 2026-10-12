@@ -488,6 +488,9 @@ python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir 
   練習の対局にする(`TimedVersus(seed, timing, drill=True)`)。`moves` 手のうちに撃った連鎖ごとに
   ((連鎖数 − 3) / 7)² の報酬、窒息は −1。評価には、練習の対局で `moves` 手のうちに撃てた最大の連鎖
   (`eval/drill_mean_max_chain`、`drill_rate_8`、`drill_rate_10`)も出す。設定例は `configs/versus_timed_drill.yaml`。
+- 先読みの特徴量 `policy.lookahead`(時間のモデルのみ。観測の種類 `look`): 手ごとの特徴量に、3手先(ネクネク
+  まで)までに育つ連鎖の種の最大・撃てる連鎖の最大・生き残れるかの3個を足す(`puyo-core/src/lookahead.rs`。
+  2手目は上位4手だけ展開)。観測の計算が1局面あたり約9ms 増える。設定例は `configs/versus_timed_look.yaml`。
 - 評価も時間のモデルで打つ。動画はチェックポイントごとに `video.opponents` の相手との対局を左右入れ替えて録画する
   (`video.every_checkpoints` 回に1回)。
 

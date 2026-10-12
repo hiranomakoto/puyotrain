@@ -373,6 +373,57 @@ def test_play_drills_reports_chains():
     assert g.needs_action() == (True, False) and g.phases()[1] == "idle"
 
 
+def test_look_observation_extends_timed():
+    g = TimedVersus(2)
+    play_some(g, np.random.default_rng(2), 8)
+    for p in (0, 1):
+        look, timed = g.observe(p, "look"), g.observe(p, "timed")
+        assert look["action_features"].shape == (22, _puyo.NUM_LOOK_ACTION_FEATURES)
+        np.testing.assert_array_equal(
+            look["action_features"][:, :_puyo.NUM_TIMED_ACTION_FEATURES], timed["action_features"])
+        np.testing.assert_array_equal(look["action_mask"], timed["action_mask"])
+        np.testing.assert_array_equal(look["versus_info"], timed["versus_info"])
+    assert len(_puyo.LOOK_ACTION_FEATURE_NAMES) == _puyo.NUM_LOOK_ACTION_FEATURES
+    batch = _puyo.TimedBatch(1)
+    batch.reset(0, 2)
+    assert batch.observe([0], [0], "look")["action_features"].shape == (1, 22, 25)
+
+
+def test_transfer_timed_to_look_starts_as_the_same_policy(tmp_path, versus_ckpt):
+    from puyotrain.rl.train_versus import (
+        build_env, build_model, build_pool, train, transfer_weights,
+    )
+
+    # 時間のモデル用(timed)の小さな重みを作り、先読みつき(look)に引き継ぐ
+    timed_run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "ppo.total_timesteps=128"),
+                      tmp_path / "timed")
+    src = timed_run / "checkpoints" / "step_0000000128.zip"
+    a = PPOAgent(src)
+    a.model.policy.features_extractor.scorer[-1].weight.data.normal_(0, 1.0)
+    a.model.save(src)
+    cfg = timed_cfg(tmp_path, versus_ckpt, "policy.lookahead=true")
+    model = build_model(cfg, build_env(cfg, build_pool(cfg, "cpu"), 0), "cpu", None)
+    rep = transfer_weights(model, src)
+    assert any(n.endswith("scorer.0.weight") for n in rep["widened"])
+    old, new = PPOAgent(src), PPOAgent("unused.zip", model=model, safe_mask=True)
+    assert old.obs_kind == "timed" and new.obs_kind == "look"
+    g = TimedVersus(7)
+    rng = np.random.default_rng(7)
+    for _ in range(10):
+        for p in (0, 1):
+            if g.needs_action()[p]:
+                logits = []
+                for agent in (old, new):
+                    pol = agent.model.policy
+                    o = {k: th.as_tensor(v[None]) for k, v in agent.observe(g, p).items()}
+                    with th.no_grad():
+                        f = pol.extract_features(o)
+                        logits.append(pol.action_net(pol.mlp_extractor.forward_actor(f))[0])
+                assert th.allclose(logits[0], logits[1], atol=1e-4)
+                g.act(p, int(rng.choice(np.flatnonzero(g.action_mask(p)))))
+        g.advance()
+
+
 def test_greedy_opponent_in_timed_pool_is_greedy():
     pool = OpponentPool({"greedy": 1}, None)
     assert isinstance(pool.sample()[1], GreedyAgent)

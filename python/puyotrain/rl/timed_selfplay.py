@@ -90,14 +90,19 @@ class TimedVersusVecEnv(VersusVecEnv):
     def __init__(self, n_envs: int, pool: OpponentPool, safe_mask: bool, attack_coef: float,
                  potential_coef: float, gamma: float, anneal_steps: int, seed: int = 0,
                  start_step: int = 0, timing: Optional[dict] = None, reward: str = "win",
-                 style: Optional[StyleConfig] = None, drill: Optional[DrillConfig] = None):
+                 style: Optional[StyleConfig] = None, drill: Optional[DrillConfig] = None,
+                 obs_kind: str = "timed"):
         if reward not in ("win", "style"):
             raise ValueError(f"reward must be win or style: {reward}")
         self.reward = reward
         self.style = style or StyleConfig()
         self.drill = drill or DrillConfig()
         self.render_mode = None  # VecEnv.__init__ が読む
-        VecEnv.__init__(self, n_envs, observation_space(timed=True), action_space())
+        if obs_kind not in ("timed", "look"):
+            raise ValueError(f"obs_kind must be timed or look: {obs_kind}")
+        self.obs_kind = obs_kind
+        VecEnv.__init__(self, n_envs, observation_space(timed=True, lookahead=obs_kind == "look"),
+                        action_space())
         self.batch = _TimedCalls(self, TimedBatch(n_envs, timing))
         self.pool = pool
         self.safe_mask = safe_mask
@@ -144,7 +149,7 @@ class TimedVersusVecEnv(VersusVecEnv):
         self.ep_start[i] = time.time()
 
     def _observe(self, idx: list[int]) -> dict:
-        obs = self.batch.observe(idx, [self.sides[i] for i in idx], "timed", self.safe_mask)
+        obs = self.batch.observe(idx, [self.sides[i] for i in idx], self.obs_kind, self.safe_mask)
         for row, i in enumerate(idx):
             self.masks[i] = obs["action_mask"][row].astype(bool)
         return obs
