@@ -484,7 +484,7 @@ python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir 
   自分の連鎖で予告を相殺した量(返し)にも報酬を出す。評価には決め手の連鎖の平均(`mean_finish_chain`)、
   8連鎖以上で決めた勝ちの割合(`big_finish_rate`)、返し勝ちの割合(`counter_win_rate`)も出す。
   設定例は `configs/versus_timed_style.yaml`。
-- 評価も時間のモデルで打つ。動画はチェックポイントごとに greedy との対局を左右入れ替えて録画する
+- 評価も時間のモデルで打つ。動画はチェックポイントごとに `video.opponents` の相手との対局を左右入れ替えて録画する
   (`video.every_checkpoints` 回に1回)。
 
 時間のモデルの動画(対局の時刻に沿って実時間で描く。落下中の組ぷよ、消える直前のぷよの強調、
@@ -536,7 +536,8 @@ docker compose run --rm train python scripts/train_versus.py --run-dir runs/vers
 - 評価: チェックポイントごとに `eval.opponents`(既定は greedy と1人プレイの重み)と
   `eval.seeds` × 左右入れ替えで対局し、勝率を `metrics.jsonl` と TensorBoard(`eval/win_rate_vs_*`)に出す。
   学習中の勝率は `rollout/win_rate`(相手別は `rollout/win_rate_greedy` など)。
-- 動画: greedy との対局を左右入れ替えて録画する(`videos/step_..._vs_greedy_p1_seed0.mp4` など)。
+- 動画: `video.opponents`(既定は greedy)の相手それぞれと、左右を入れ替えて録画する
+  (`videos/step_..._vs_greedy_p1_seed0.mp4` など)。相手は greedy・固定の相手の名前・チェックポイントのパス。
 
 ### プロファイリング(1人プレイ・対戦の両方)
 

@@ -63,7 +63,8 @@ eval:
 video:
   enabled: true
   every_checkpoints: 4      # N 回に1回だけ作る(学習終了時は必ず作る)
-  seeds: [0]                # greedy との対局を左右入れ替えて録画する
+  seeds: [0]                # 各シードで、相手ごとに左右を入れ替えて録画する
+  opponents: [greedy]       # 録画する相手(greedy / 固定の相手の名前 / チェックポイントのパス)
   max_moves: 300
   fps: 30
   frames_per_move: 4

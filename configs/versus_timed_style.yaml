@@ -55,3 +55,4 @@ video:
   enabled: true
   every_checkpoints: 4
   timed_speed: 1.0
+  opponents: [peer, solo_play, sync_versus]   # 大連鎖の撃ち合い・返し・潰しへの対応が見える相手

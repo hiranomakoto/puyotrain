@@ -310,6 +310,17 @@ def test_timed_env_style_reward():
         TimedVersusVecEnv(1, pool, True, 0, 0, 0.99, 0, reward="nope")
 
 
+def test_videos_for_configured_opponents(tmp_path, versus_ckpt):
+    from puyotrain.rl.train_versus import train
+
+    run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "ppo.total_timesteps=128",
+                          "video.enabled=true", "video.opponents=[greedy, sync_versus]",
+                          "video.timed_speed=60", "video.end_hold_frames=1"), tmp_path / "run")
+    names = sorted(p.name for p in (run / "videos").glob("*.mp4"))
+    assert names == [f"step_0000000128_vs_{o}_{t}_seed0.mp4"
+                     for o in ("greedy", "sync_versus") for t in ("p1", "p2")]
+
+
 def test_greedy_opponent_in_timed_pool_is_greedy():
     pool = OpponentPool({"greedy": 1}, None)
     assert isinstance(pool.sample()[1], GreedyAgent)

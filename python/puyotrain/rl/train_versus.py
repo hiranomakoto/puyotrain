@@ -214,6 +214,11 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
     snap_every = int(cfg["pool"]["snapshot_every"])
     chash = config_hash(cfg)
     opponents = {opponent_label(s): eval_opponent(s, cfg, device) for s in cfg["eval"]["opponents"]}
+    # 動画の相手(評価の相手と同じなら同じエージェントを使う)
+    video_opponents = {}
+    for spec in cfg["video"].get("opponents") or ["greedy"]:
+        label = opponent_label(spec)
+        video_opponents[label] = opponents.get(label) or eval_opponent(spec, cfg, device)
     timed = is_timed(cfg)  # 時間のモデルでは評価・動画も時間のモデルで打つ
     style = style_config(cfg)
 
@@ -276,20 +281,21 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                                 encoding="utf-8")
 
         def write_videos(self, me: Agent, name: str) -> list[str]:
-            greedy = GreedyAgent(1)
+            """``video.opponents`` の相手それぞれと、``video.seeds`` の各シードで左右を入れ替えて録画する。"""
             videos = []
-            for s in cfg["video"]["seeds"]:
-                for agents, tag in (((me, greedy), "p1"), ((greedy, me), "p2")):
-                    if timed:
-                        rep = record_timed(agents, s, cfg.get("timing") or None,
-                                           extra_meta={"run": run_dir.name})
-                    else:
-                        rep = record_versus(agents, s, int(cfg["video"]["max_moves"]),
-                                            extra_meta={"run": run_dir.name})
-                    stem = f"{name}_vs_greedy_{tag}_seed{s}"
-                    save_replay(rep, run_dir / "replays" / f"{stem}.json")
-                    videos.append(render_replay(rep, run_dir / "videos" / f"{stem}.mp4",
-                                                cfg["video"]).name)
+            for label, opp in video_opponents.items():
+                for s in cfg["video"]["seeds"]:
+                    for agents, tag in (((me, opp), "p1"), ((opp, me), "p2")):
+                        if timed:
+                            rep = record_timed(agents, s, cfg.get("timing") or None,
+                                               extra_meta={"run": run_dir.name})
+                        else:
+                            rep = record_versus(agents, s, int(cfg["video"]["max_moves"]),
+                                                extra_meta={"run": run_dir.name})
+                        stem = f"{name}_vs_{label}_{tag}_seed{s}"
+                        save_replay(rep, run_dir / "replays" / f"{stem}.json")
+                        videos.append(render_replay(rep, run_dir / "videos" / f"{stem}.mp4",
+                                                    cfg["video"]).name)
             return videos
 
         def checkpoint(self, videos_enabled: bool = True, final: bool = False) -> None:
