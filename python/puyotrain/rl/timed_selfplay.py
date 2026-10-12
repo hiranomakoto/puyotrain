@@ -125,7 +125,7 @@ class TimedVersusVecEnv(VersusVecEnv):
         self.actions: Optional[np.ndarray] = None
         self.timer = None  # プロファイリング用(profiling.SectionTimer)
         self._stacked_key: tuple = ()
-        self._stacked: Optional[StackedActors] = None
+        self._stacked: list[StackedActors] = []
 
     # ------------------------------------------------------------------ 対局の開始・観測
 
@@ -180,8 +180,7 @@ class TimedVersusVecEnv(VersusVecEnv):
             for i, a in zip(greedy, self.batch.greedy(greedy, players, seeds)):
                 acts[i] = a
 
-        stacked = self._stacked_past()
-        if stacked is not None:
+        for stacked in self._stacked_past():  # 形が同じ過去の自分ごと
             groups = {k: batched.pop(aid) for aid, k in stacked.index.items() if aid in batched}
             if groups:
                 acts.update(self._stacked_actions(stacked, groups))

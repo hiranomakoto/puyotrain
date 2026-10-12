@@ -424,6 +424,53 @@ def test_transfer_timed_to_look_starts_as_the_same_policy(tmp_path, versus_ckpt)
         g.advance()
 
 
+def test_pool_mixing_timed_and_look_past_selves(tmp_path, versus_ckpt):
+    """先読みなし(timed)と先読みつき(look)の過去の自分が混ざっても、形ごとに束ねて打てる。
+    (先読みつきの学習で、初期の過去の自分が timed、学習中に加わる自分が look だったときに止まった)"""
+    from puyotrain.rl.timed_selfplay import TimedVersusVecEnv
+    from puyotrain.rl.train_versus import build_env, build_model, build_pool
+
+    paths = []
+    for look in (False, False, True, True, True):
+        cfg = timed_cfg(tmp_path, versus_ckpt, f"policy.lookahead={str(look).lower()}")
+        model = build_model(cfg, build_env(cfg, build_pool(cfg, "cpu"), 0), "cpu", None)
+        paths.append(tmp_path / f"past_{len(paths)}.zip")
+        model.save(paths[-1])
+    pool = OpponentPool({"past": 1}, None, device="cpu")
+    for p in paths:
+        pool.add_snapshot(p)
+    env = TimedVersusVecEnv(6, pool, safe_mask=True, attack_coef=0.0, potential_coef=0.0,
+                            gamma=0.99, anneal_steps=0, seed=6, obs_kind="look")
+    env.reset()
+    rng = np.random.default_rng(6)
+    for _ in range(30):
+        masks = np.stack(env.env_method("action_masks"))
+        env.step(np.array([rng.choice(np.flatnonzero(m)) for m in masks]))
+    assert sorted(len(s.index) for s in env._stacked) == [2, 3]
+
+
+def test_unexpected_error_is_logged_and_weights_saved(tmp_path, versus_ckpt, monkeypatch):
+    from puyotrain.rl import timed_selfplay
+    from puyotrain.rl.train_versus import train
+
+    calls = {"n": 0}
+    original = timed_selfplay.TimedVersusVecEnv.step_wait
+
+    def failing(self):
+        calls["n"] += 1
+        if calls["n"] > 70:  # 1回目のロールアウト(64手)の後で失敗させる
+            raise RuntimeError("boom")
+        return original(self)
+
+    monkeypatch.setattr(timed_selfplay.TimedVersusVecEnv, "step_wait", failing)
+    with pytest.raises(RuntimeError):
+        train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "ppo.total_timesteps=1024",
+                        "checkpoint.every_steps=100000"), tmp_path / "run")
+    run = tmp_path / "run"
+    assert "boom" in (run / "error.log").read_text()
+    assert list((run / "checkpoints").glob("step_*.zip"))
+
+
 def test_greedy_opponent_in_timed_pool_is_greedy():
     pool = OpponentPool({"greedy": 1}, None)
     assert isinstance(pool.sample()[1], GreedyAgent)

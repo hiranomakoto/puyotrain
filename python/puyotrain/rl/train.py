@@ -326,6 +326,21 @@ def _learn(model, env, steps: int, callback, run_dir: Path, t0: float,
             print("\n[interrupt] saving checkpoint (videos skipped; use render_all later)...",
                   flush=True)
             callback.checkpoint(videos_enabled=False)
+    except Exception:
+        # 予期しないエラー: 原因を error.log に残し、できればその時点の重みを保存してから止まる
+        # (Docker の --rm で起動するとログが消えるため)
+        import traceback
+
+        detail = traceback.format_exc()
+        with open(run_dir / "error.log", "a", encoding="utf-8") as f:
+            f.write(f"step {model.num_timesteps:,}\n{detail}\n")
+        print(f"\n[error] see {run_dir / 'error.log'}; saving weights...", flush=True)
+        if callback.last_saved != model.num_timesteps:
+            try:
+                callback.checkpoint(videos_enabled=False)
+            except Exception:  # noqa: BLE001  評価で同じエラーになる場合は重みだけ保存する
+                model.save(str(run_dir / "checkpoints" / f"step_{model.num_timesteps:010d}.zip"))
+        raise
     finally:
         try:
             env.close()

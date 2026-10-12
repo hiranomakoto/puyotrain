@@ -63,6 +63,12 @@ class OpponentPool:
         return cat, group[self.rng.integers(len(group))]
 
 
+def _shape_key(agent: PPOAgent) -> tuple:
+    """束ねられるかの判定用: 観測の種類と、方策のパラメータの名前と形。"""
+    return (agent.obs_kind,
+            tuple((n, tuple(p.shape)) for n, p in agent.model.policy.named_parameters()))
+
+
 class StackedActors:
     """形が同じ複数の方策(過去の自分)の重みを束ね、``torch.func.vmap`` で1回の推論にまとめる。
 
@@ -147,7 +153,7 @@ class VersusVecEnv(VecEnv):
         self.actions: Optional[np.ndarray] = None
         self.timer = None  # プロファイリング用(profiling.SectionTimer)。相手の推論時間を測る
         self._stacked_key: tuple = ()
-        self._stacked: Optional[StackedActors] = None
+        self._stacked: list[StackedActors] = []
 
     # ------------------------------------------------------------------ 進行
 
@@ -177,13 +183,21 @@ class VersusVecEnv(VecEnv):
     def _stack(self, observations: list[dict]) -> dict:
         return {k: np.stack([o[k] for o in observations]) for k in observations[0]}
 
-    def _stacked_past(self) -> Optional[StackedActors]:
-        """過去の自分(2人以上)を束ねたもの。プールが変わったら作り直す。"""
+    def _stacked_past(self) -> list[StackedActors]:
+        """過去の自分を、形が同じ方策(観測の種類とパラメータの形が同じもの)ごとに束ねたもの。
+        2人以上いるグループだけを束ねる(1人のグループは個別に推論する)。プールが変わったら作り直す。
+
+        初期の過去の自分(``pool.initial_past``)と、学習中に加わる今の重みとで入力の形が違う場合
+        (例: 先読みなしの timed と先読みつきの look)があるので、形ごとに分ける。
+        """
         past = self.pool.members["past"]
         key = tuple(id(a) for a in past)
         if key != self._stacked_key:
             self._stacked_key = key
-            self._stacked = StackedActors(past) if len(past) >= 2 else None
+            groups: dict[tuple, list[PPOAgent]] = defaultdict(list)
+            for a in past:
+                groups[_shape_key(a)].append(a)
+            self._stacked = [StackedActors(g) for g in groups.values() if len(g) >= 2]
         return self._stacked
 
     @contextmanager
@@ -202,9 +216,8 @@ class VersusVecEnv(VecEnv):
                 batched[id(agent)].append(i)
             else:
                 acts[i] = agent.act(self.games[i], 1 - self.sides[i])
-        stacked = self._stacked_past()
-        if stacked is not None:
-            # 過去の自分は全員分を1回の推論で(方策ごとの局面数を B にそろえて束ねる)
+        for stacked in self._stacked_past():
+            # 過去の自分は、形が同じグループごとに全員分を1回の推論で(方策ごとの局面数を B にそろえて束ねる)
             groups = {k: batched.pop(aid) for aid, k in stacked.index.items() if aid in batched}
             if groups:
                 obs = {k: [self.opponents[idxs[0]][1].observe(self.games[i], 1 - self.sides[i])

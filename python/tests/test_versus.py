@@ -208,7 +208,7 @@ def test_stacked_past_opponents_match_individual_inference(tmp_path, solo_ckpt):
             checked += 1
         masks = np.stack(env.env_method("action_masks"))
         env.step(np.array([rng.choice(np.flatnonzero(m)) for m in masks]))
-    assert env._stacked is not None and checked == 240
+    assert len(env._stacked) == 1 and checked == 240
 
 
 def test_fit_elo_orders_players_and_anchors():
