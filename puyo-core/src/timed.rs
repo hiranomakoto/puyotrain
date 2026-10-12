@@ -355,6 +355,20 @@ impl TimedVersus {
         )
     }
 
+    /// プレイヤー `i` の先読みで組む手([`crate::builder::builder_action`]、試作)。
+    /// 操作待ちでなければ `None`。
+    pub fn builder_action(&self, i: usize, depth: usize, fire: bool) -> Option<Action> {
+        if !self.needs_action()[i] {
+            return None;
+        }
+        crate::builder::builder_action(
+            &self.players[i].state.field,
+            &self.visible_pairs(i),
+            depth,
+            fire,
+        )
+    }
+
     /// 操作待ちのプレイヤー `i` が手を決める(設置を始める)。時刻は進めない。
     pub fn act(&mut self, i: usize, action: Action) -> Result<(), StepError> {
         if self.is_over() {

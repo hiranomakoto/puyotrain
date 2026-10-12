@@ -715,6 +715,17 @@ impl PyTimedVersus {
             .map(Action::index))
     }
 
+    /// 先読みで組む手(試作)。見えている組ぷよを `depth` 手先(1〜3)まで全部試し、
+    /// `fire` が False なら最後の潜在連鎖、True なら途中で撃てる連鎖の最大が大きい並びの最初の手。
+    #[pyo3(signature = (player, depth=3, fire=false))]
+    fn builder_action(&self, player: usize, depth: usize, fire: bool) -> PyResult<Option<usize>> {
+        check_player(player)?;
+        Ok(self
+            .inner
+            .builder_action(player, depth, fire)
+            .map(Action::index))
+    }
+
     fn safe_actions(&self, player: usize) -> PyResult<u32> {
         check_player(player)?;
         if !self.inner.needs_action()[player] {

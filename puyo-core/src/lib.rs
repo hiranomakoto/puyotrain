@@ -11,6 +11,7 @@
 pub mod action;
 pub mod afterstate;
 pub mod bot;
+pub mod builder;
 pub mod chain;
 pub mod color;
 pub mod field;
