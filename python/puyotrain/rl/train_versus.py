@@ -29,11 +29,11 @@ import numpy as np
 
 from .agents import Agent, GreedyAgent, PPOAgent, checkpoint_step
 from .config import config_hash, eval_seeds, load_config
-from .match import play_match
+from .match import play_drills, play_match
 from .render import render_replay
 from .replay import record_timed, record_versus, save_replay
 from .selfplay import OpponentPool, VersusVecEnv
-from .style import StyleConfig
+from .style import DrillConfig, StyleConfig
 from .train import (
     _learn,
     _stop_on_sigterm,
@@ -131,6 +131,11 @@ def style_config(cfg: dict) -> StyleConfig:
     return StyleConfig.from_dict(cfg["env"].get("style"))
 
 
+def drill_config(cfg: dict) -> DrillConfig:
+    """組む練習の対局の設定(``env.drill``)。"""
+    return DrillConfig.from_dict(cfg["env"].get("drill"))
+
+
 def is_timed(cfg: dict) -> bool:
     """時間のモデル(``rules: timed``)で学習・評価するか。"""
     return cfg.get("rules", "sync") == "timed"
@@ -146,7 +151,7 @@ def build_env(cfg: dict, pool: OpponentPool, seed: int, start_step: int = 0) -> 
             attack_coef=float(e["attack_coef"]), potential_coef=float(e["potential_coef"]),
             gamma=float(cfg["ppo"]["gamma"]), anneal_steps=int(e["anneal_steps"]), seed=seed,
             start_step=start_step, timing=cfg.get("timing") or None,
-            reward=e.get("reward", "win"), style=style_config(cfg),
+            reward=e.get("reward", "win"), style=style_config(cfg), drill=drill_config(cfg),
         )
     return VersusVecEnv(
         n_envs=int(e["n_envs"]), pool=pool, max_turns=int(e["max_turns"]),
@@ -221,6 +226,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
         video_opponents[label] = opponents.get(label) or eval_opponent(spec, cfg, device)
     timed = is_timed(cfg)  # 時間のモデルでは評価・動画も時間のモデルで打つ
     style = style_config(cfg)
+    drill = drill_config(cfg)
 
     class Checkpointer(BaseCallback):
         """一定ステップごとに保存・評価・動画。過去の自分をプールに加える。勝率を TensorBoard に出す。"""
@@ -234,6 +240,12 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
 
         def _on_rollout_end(self) -> None:
             buf = self.model.ep_info_buffer
+            if buf:
+                drills = [e for e in buf if e["opponent"] == "drill"]
+                if drills:
+                    self.logger.record("rollout/drill_max_chain_mean",
+                                       float(np.mean([e["max_chain"] for e in drills])))
+                buf = [e for e in buf if e["opponent"] != "drill"]  # 以下は普段の対局だけ
             if buf:
                 results = [e["result"] for e in buf]
                 self.logger.record("rollout/win_rate", float(np.mean([r == 1 for r in results])))
@@ -325,6 +337,11 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                 for k in ("mean_finish_chain", "big_finish_rate", "counter_win_rate"):
                     if k in r:
                         self.logger.record(f"eval/{k}_vs_{label}", r[k])
+            drill_metrics = None
+            if timed:  # 組む力: 相手が何もしない対局で、決めた手数のうちに撃てた最大の連鎖
+                drill_metrics = play_drills(me, seeds, drill, cfg.get("timing") or None)
+                for k in ("mean_max_chain", "rate_8", "rate_10", "death_rate"):
+                    self.logger.record(f"eval/drill_{k}", drill_metrics[k])
             self.logger.dump(step)
 
             video_every = max(1, int(cfg["video"].get("every_checkpoints", 1)))
@@ -342,6 +359,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                 "eval_seeds": {"start": seeds[0], "count": len(seeds)},
                 "metrics": metrics,
                 "aux_scale": env.anneal(),
+                "drill": drill_metrics,
                 "pool_past": pool.snapshot_paths(),
                 "videos": videos,
                 "config_hash": chash,
@@ -351,7 +369,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
             (run_dir / "checkpoints" / f"{name}.json").write_text(
                 json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
             with open(run_dir / "metrics.jsonl", "a", encoding="utf-8") as f:
-                slim = {k: record[k] for k in ("step", "elapsed_sec", "metrics", "aux_scale")}
+                slim = {k: record[k] for k in ("step", "elapsed_sec", "metrics", "aux_scale", "drill")}
                 f.write(json.dumps(slim, ensure_ascii=False) + "\n")
             if self.verbose >= 0:
                 rates = "  ".join(
@@ -359,6 +377,9 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                     + (f"(finish {m['mean_finish_chain']:.1f}, big {m['big_finish_rate']:.2f}, "
                        f"counter {m['counter_win_rate']:.2f})" if "mean_finish_chain" in m else "")
                     for k, m in metrics.items())
+                if drill_metrics:
+                    rates += (f"  drill: chain {drill_metrics['mean_max_chain']:.1f} "
+                              f">=8 {drill_metrics['rate_8']:.2f} >=10 {drill_metrics['rate_10']:.2f}")
                 print(f"[checkpoint] {name}: {rates}  aux={env.anneal():.2f}", flush=True)
 
     return Checkpointer()

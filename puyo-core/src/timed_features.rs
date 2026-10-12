@@ -119,7 +119,7 @@ pub fn timed_info(g: &TimedVersus, i: usize) -> [f32; NUM_TIMED_INFO] {
     let busy = match opp.phase {
         Phase::Chaining { .. } => chain_end,
         Phase::Placing { until, .. } | Phase::OjamaFalling { until } => until - g.now(),
-        Phase::Ready | Phase::Dead => 0,
+        Phase::Ready | Phase::Dead | Phase::Idle => 0,
     };
     let mut out = [0.0; NUM_TIMED_INFO];
     out[..NUM_VERSUS_INFO].copy_from_slice(&base);

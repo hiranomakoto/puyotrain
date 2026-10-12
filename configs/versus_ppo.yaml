@@ -21,6 +21,7 @@ env:
   anneal_steps: 10000000    # 補助報酬をこのステップ数で 0 まで直線的に減らす
   reward: win               # win(勝ち +1 / 負け −1)/ style(大連鎖で魅せて勝つ。時間のモデルのみ)
   style: {}                 # reward: style の設定と勝ち方の評価(python/puyotrain/rl/style.py の StyleConfig)
+  drill: {}                 # 組む練習の対局の設定(style.py の DrillConfig。fraction: 0 なら使わない)
 
 pool:
   # 相手のカテゴリを選ぶ重み。greedy・固定の相手(fixed の名前)・past(過去の自分)。

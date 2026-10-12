@@ -238,10 +238,15 @@ impl PyTimedBatch {
         self.games.len()
     }
 
-    /// 対局 `i` をシード `seed` で始め直す。
-    fn reset(&mut self, i: usize, seed: u64) -> PyResult<()> {
+    /// 対局 `i` をシード `seed` で始め直す。`drill` なら組む練習の対局(プレイヤー1は何もしない)。
+    #[pyo3(signature = (i, seed, drill=false))]
+    fn reset(&mut self, i: usize, seed: u64, drill: bool) -> PyResult<()> {
         self.check(&[i])?;
-        self.games[i] = TimedVersus::with_timing(seed, self.timing);
+        self.games[i] = if drill {
+            TimedVersus::drill(seed, self.timing)
+        } else {
+            TimedVersus::with_timing(seed, self.timing)
+        };
         Ok(())
     }
 
@@ -320,6 +325,10 @@ impl PyTimedBatch {
         d.set_item(
             "max_chain_start",
             PyArray1::from_vec(py, col(&|p| p.max_chain_start)).reshape([n, 2])?,
+        )?;
+        d.set_item(
+            "chains_fired",
+            PyArray1::from_vec(py, col(&|p| p.chains_fired as u64)).reshape([n, 2])?,
         )?;
         Ok(d)
     }

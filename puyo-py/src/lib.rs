@@ -598,6 +598,7 @@ fn phase_name(p: &Phase) -> &'static str {
         Phase::Chaining { .. } => "chaining",
         Phase::OjamaFalling { .. } => "ojama_falling",
         Phase::Dead => "dead",
+        Phase::Idle => "idle",
     }
 }
 
@@ -628,11 +629,17 @@ impl PyTimedVersus {
 #[pymethods]
 impl PyTimedVersus {
     /// `timing` は時間の定数の上書き(dict。キーは Timing のフィールド名)。
+    /// `drill` なら組む練習の対局(プレイヤー1は何もしない)。
     #[new]
-    #[pyo3(signature = (seed, timing=None))]
-    fn new(seed: u64, timing: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    #[pyo3(signature = (seed, timing=None, drill=false))]
+    fn new(seed: u64, timing: Option<&Bound<'_, PyDict>>, drill: bool) -> PyResult<Self> {
+        let timing = timing_from_dict(timing)?;
         Ok(PyTimedVersus {
-            inner: TimedVersus::with_timing(seed, timing_from_dict(timing)?),
+            inner: if drill {
+                TimedVersus::drill(seed, timing)
+            } else {
+                TimedVersus::with_timing(seed, timing)
+            },
         })
     }
 

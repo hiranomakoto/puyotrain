@@ -188,11 +188,13 @@ def test_tiny_timed_training_and_resume(tmp_path, versus_ckpt, capsys):
     from puyotrain.rl.train_versus import resume, train
 
     run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "profile.every_iterations=1",
-                          "env.reward=style"), tmp_path / "run")
+                          "env.reward=style", "env.drill={fraction: 0.5, moves: 10}"),
+                tmp_path / "run")
     rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
     assert set(rows[-1]["metrics"]) == {"greedy", "sync_versus", "step_128"}
     for k in ("mean_seconds", "mean_finish_chain", "big_finish_rate", "counter_win_rate"):
         assert k in rows[-1]["metrics"]["greedy"]
+    assert rows[-1]["drill"]["games"] == 1 and "rate_10" in rows[-1]["drill"]
     agent = PPOAgent(run / "checkpoints" / "step_0000000256.zip")
     assert agent.obs_kind == "timed"
     with pytest.raises(ValueError):
@@ -319,6 +321,56 @@ def test_videos_for_configured_opponents(tmp_path, versus_ckpt):
     names = sorted(p.name for p in (run / "videos").glob("*.mp4"))
     assert names == [f"step_0000000128_vs_{o}_{t}_seed0.mp4"
                      for o in ("greedy", "sync_versus") for t in ("p1", "p2")]
+
+
+def test_drill_reward_and_config():
+    from puyotrain.rl.style import DrillConfig, drill_reward
+
+    d = DrillConfig(fraction=0.5)
+    assert drill_reward(3, d) == 0.0
+    assert drill_reward(10, d) == 1.0
+    assert drill_reward(13, d) == 1.0
+    assert drill_reward(8, d) == pytest.approx((5 / 7) ** 2)
+    with pytest.raises(KeyError):
+        DrillConfig.from_dict({"nope": 1})
+
+
+def test_drill_games_in_env():
+    from puyotrain.rl.style import DrillConfig
+    from puyotrain.rl.timed_selfplay import TimedVersusVecEnv
+
+    pool = OpponentPool({"greedy": 1}, None)
+    env = TimedVersusVecEnv(6, pool, safe_mask=True, attack_coef=0.0, potential_coef=0.0,
+                            gamma=0.99, anneal_steps=0, seed=5, reward="style",
+                            drill=DrillConfig(fraction=0.5, moves=12))
+    env.reset()
+    assert any(env.is_drill) and not all(env.is_drill)
+    rng = np.random.default_rng(5)
+    drills, versus = [], []
+    for _ in range(150):
+        masks = np.stack(env.env_method("action_masks"))
+        _, _, dones, infos = env.step(np.array([rng.choice(np.flatnonzero(m)) for m in masks]))
+        for d, info in zip(dones, infos):
+            if d:
+                (drills if info["episode"]["opponent"] == "drill" else versus).append(
+                    info["episode"])
+    assert drills and versus
+    # 練習の対局は12手で終わる(窒息すればそれより前)
+    assert all(e["l"] <= 12 for e in drills)
+    assert any(e["l"] == 12 for e in drills)
+    assert all(e["result"] in (0, -1) for e in drills)
+
+
+def test_play_drills_reports_chains():
+    from puyotrain.rl.match import play_drills
+    from puyotrain.rl.style import DrillConfig
+
+    r = play_drills(GreedyAgent(0), [0, 1, 2], DrillConfig(moves=20))
+    assert r["games"] == 3
+    assert 0 <= r["rate_10"] <= r["rate_8"] <= 1
+    assert r["mean_max_chain"] >= 1  # greedy は20手のうちに何かしら消す
+    g = TimedVersus(0, None, True)
+    assert g.needs_action() == (True, False) and g.phases()[1] == "idle"
 
 
 def test_greedy_opponent_in_timed_pool_is_greedy():

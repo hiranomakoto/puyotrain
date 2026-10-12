@@ -171,6 +171,8 @@ pub enum Phase {
     OjamaFalling { until: u64 },
     /// 窒息した。
     Dead,
+    /// 何もしない(組む練習の対局の相手。操作待ちにならず、窒息もしない)。
+    Idle,
 }
 
 /// 1プレイヤー分の状態。
@@ -198,6 +200,8 @@ pub struct TimedPlayer {
     pub last_chain_start: u64,
     /// 最大連鎖(`max_chain`)を撃ち始めた時刻。
     pub max_chain_start: u64,
+    /// 撃ち終えた連鎖の回数。
+    pub chains_fired: u32,
     /// 直前の連鎖1つの開始時刻・消える前の盤面・消えたセル(描画用)。
     pub link_start: u64,
     pub link_before: Field,
@@ -221,6 +225,7 @@ impl TimedPlayer {
             last_chain: 0,
             last_chain_start: 0,
             max_chain_start: 0,
+            chains_fired: 0,
             link_start: 0,
             link_before: Field::new(),
             link_cleared: 0,
@@ -239,7 +244,7 @@ impl TimedPlayer {
             Phase::Placing { until, .. }
             | Phase::Chaining { until, .. }
             | Phase::OjamaFalling { until } => Some(until),
-            Phase::Ready | Phase::Dead => None,
+            Phase::Ready | Phase::Dead | Phase::Idle => None,
         }
     }
 }
@@ -258,6 +263,14 @@ pub struct TimedVersus {
 impl TimedVersus {
     pub fn new(seed: u64) -> Self {
         Self::with_timing(seed, Timing::default())
+    }
+
+    /// 組む練習の対局: プレイヤー1は何もしない(操作待ちにならず、攻撃もせず、窒息もしない)。
+    /// プレイヤー0だけが手を決めて進める。
+    pub fn drill(seed: u64, timing: Timing) -> Self {
+        let mut g = Self::with_timing(seed, timing);
+        g.players[1].phase = Phase::Idle;
+        g
     }
 
     pub fn with_timing(seed: u64, timing: Timing) -> Self {
@@ -417,7 +430,7 @@ impl TimedVersus {
                 }
             }
             Phase::OjamaFalling { .. } => self.settle(i),
-            Phase::Ready | Phase::Dead => {}
+            Phase::Ready | Phase::Dead | Phase::Idle => {}
         }
     }
 
@@ -472,6 +485,7 @@ impl TimedVersus {
         let p = &mut self.players[i];
         p.last_chain = chain;
         p.last_chain_start = p.chain_start;
+        p.chains_fired += 1;
         if p.bonus_used {
             p.state.all_clear = false;
         }
@@ -818,6 +832,24 @@ mod tests {
         assert_eq!(p.max_chain_start, 48);
         assert!(p.offset_total >= 1);
         assert_eq!(p.offset_total + p.state.pending as u64, 6);
+    }
+
+    #[test]
+    fn drill_opponent_never_acts() {
+        let mut g = TimedVersus::drill(3, Timing::default());
+        assert_eq!(g.needs_action(), [true, false]);
+        for _ in 0..20 {
+            let m = g.legal_actions(0);
+            g.act(0, Action::new(m.trailing_zeros() as usize).unwrap())
+                .unwrap();
+            g.advance();
+            if g.is_over() {
+                break;
+            }
+            assert_eq!(g.needs_action(), [true, false]);
+        }
+        assert_eq!(g.player(1).moves, 0);
+        assert!(g.player(1).state.field.is_empty());
     }
 
     #[test]

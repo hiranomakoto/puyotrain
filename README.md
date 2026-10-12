@@ -484,6 +484,10 @@ python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir 
   自分の連鎖で予告を相殺した量(返し)にも報酬を出す。評価には決め手の連鎖の平均(`mean_finish_chain`)、
   8連鎖以上で決めた勝ちの割合(`big_finish_rate`)、返し勝ちの割合(`counter_win_rate`)も出す。
   設定例は `configs/versus_timed_style.yaml`。
+- 組む練習の対局 `env.drill`(時間のモデルのみ): 学習中の対局のうち `fraction` の割合を、相手が何もしない
+  練習の対局にする(`TimedVersus(seed, timing, drill=True)`)。`moves` 手のうちに撃った連鎖ごとに
+  ((連鎖数 − 3) / 7)² の報酬、窒息は −1。評価には、練習の対局で `moves` 手のうちに撃てた最大の連鎖
+  (`eval/drill_mean_max_chain`、`drill_rate_8`、`drill_rate_10`)も出す。設定例は `configs/versus_timed_drill.yaml`。
 - 評価も時間のモデルで打つ。動画はチェックポイントごとに `video.opponents` の相手との対局を左右入れ替えて録画する
   (`video.every_checkpoints` 回に1回)。
 

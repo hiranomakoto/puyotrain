@@ -53,3 +53,34 @@ def is_counter_win(winner: dict, loser: dict, style: StyleConfig) -> bool:
     return (loser["max_chain"] >= style.counter_min_chain
             and winner["max_chain"] > loser["max_chain"]
             and winner["max_chain_start"] >= loser["max_chain_start"])
+
+
+@dataclass(frozen=True)
+class DrillConfig:
+    """組む練習の対局(相手は何もしない)の設定。
+
+    学習中の対局のうち ``fraction`` の割合を練習の対局にする。練習の対局では、``moves`` 手のうちに
+    撃った連鎖ごとに ``drill_reward`` の報酬を出し、窒息は −1、``moves`` 手に達したら終わり
+    (撃たずに終われば報酬なし。打ち切りではなく終了として扱う)。
+    """
+
+    fraction: float = 0.0          # 練習の対局の割合(0 なら使わない)
+    moves: int = 32                # 1局の手数
+    low_chain: int = 3             # 報酬が0になる連鎖数(これ以下)
+    high_chain: int = 10           # 報酬が1になる連鎖数(これ以上)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "DrillConfig":
+        names = {f.name for f in fields(cls)}
+        unknown = set(d or {}) - names
+        if unknown:
+            raise KeyError(f"unknown drill keys: {sorted(unknown)}")
+        return cls(**(d or {}))
+
+
+def drill_reward(chain: int, drill: DrillConfig) -> float:
+    """練習の対局で、撃った連鎖1回の報酬: ((連鎖数 − low) / (high − low))² を 0〜1 に収めたもの。
+    大きな連鎖を1回撃つほうが、小さな連鎖を何回も撃つよりずっと得になる。"""
+    span = max(1, drill.high_chain - drill.low_chain)
+    t = min(1.0, max(0.0, (chain - drill.low_chain) / span))
+    return t * t

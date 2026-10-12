@@ -17,7 +17,14 @@ from .._puyo import TimedBatch
 from ..spaces import action_space, observation_space
 from .agents import Agent, GreedyAgent, PPOAgent
 from .selfplay import OpponentPool, StackedActors, VersusVecEnv
-from .style import StyleConfig, finish_chain, is_counter_win, win_reward
+from .style import (
+    DrillConfig,
+    StyleConfig,
+    drill_reward,
+    finish_chain,
+    is_counter_win,
+    win_reward,
+)
 
 _SEED_HIGH = 2**63
 
@@ -66,9 +73,15 @@ class TimedVersusVecEnv(VersusVecEnv):
       相殺した量(返し)にも報酬を出す。潜在連鎖の整形は ``potential_floor`` の割合までは残す。
       負けは −1。
 
+    組む練習の対局(``drill``、``style.DrillConfig``): 対局のうち ``drill.fraction`` の割合は、
+    相手が何もしない練習の対局にする(学習側は常にプレイヤー0、相手のカテゴリ名は drill)。
+    ``drill.moves`` 手のうちに撃った連鎖ごとに ``drill_reward`` の報酬、窒息は −1、
+    ``drill.moves`` 手に達したら終了(打ち切りではなく終了。撃たずに終われば報酬なし)。
+    潜在連鎖の整形は普段の対局と同じ。
+
     ``info["episode"]`` には ``result`` と ``opponent`` に加えて、学習側の最大連鎖 ``max_chain``、
     対局時間 ``seconds``、決め手の連鎖 ``finish_chain``(勝った局だけ。負けは0)、
-    返し勝ちか ``counter_win`` を入れる。
+    返し勝ちか ``counter_win`` を入れる。練習の対局の ``result`` は窒息なら −1、それ以外は 0。
 
     相手のうち過去の自分(``pool`` の past)は、時間のモデル用の重み(観測の種類 timed)を前提に
     重みを束ねて1回で推論する。
@@ -77,11 +90,12 @@ class TimedVersusVecEnv(VersusVecEnv):
     def __init__(self, n_envs: int, pool: OpponentPool, safe_mask: bool, attack_coef: float,
                  potential_coef: float, gamma: float, anneal_steps: int, seed: int = 0,
                  start_step: int = 0, timing: Optional[dict] = None, reward: str = "win",
-                 style: Optional[StyleConfig] = None):
+                 style: Optional[StyleConfig] = None, drill: Optional[DrillConfig] = None):
         if reward not in ("win", "style"):
             raise ValueError(f"reward must be win or style: {reward}")
         self.reward = reward
         self.style = style or StyleConfig()
+        self.drill = drill or DrillConfig()
         self.render_mode = None  # VecEnv.__init__ が読む
         VecEnv.__init__(self, n_envs, observation_space(timed=True), action_space())
         self.batch = _TimedCalls(self, TimedBatch(n_envs, timing))
@@ -98,6 +112,8 @@ class TimedVersusVecEnv(VersusVecEnv):
         self.phi = [0.0] * n_envs
         self.last_attack = [0] * n_envs
         self.last_offset = [0] * n_envs
+        self.last_fired = [0] * n_envs
+        self.is_drill = [False] * n_envs
         self.ep_return = [0.0] * n_envs
         self.ep_start = [0.0] * n_envs
         self.masks: list = [None] * n_envs
@@ -110,10 +126,17 @@ class TimedVersusVecEnv(VersusVecEnv):
 
     def _new_game(self, i: int) -> None:
         seed = int(self.rng.integers(0, _SEED_HIGH))
-        self.batch.reset(i, seed)
-        self.sides[i] = int(self.rng.integers(2))
-        self.opponents[i] = self.pool.sample()
-        self.opponents[i][1].reset(seed % 2**32)
+        self.is_drill[i] = self.drill.fraction > 0 and self.rng.random() < self.drill.fraction
+        if self.is_drill[i]:
+            self.batch.reset(i, seed, True)
+            self.sides[i] = 0
+            self.opponents[i] = ("drill", None)  # type: ignore[assignment]
+        else:
+            self.batch.reset(i, seed)
+            self.sides[i] = int(self.rng.integers(2))
+            self.opponents[i] = self.pool.sample()
+            self.opponents[i][1].reset(seed % 2**32)
+        self.last_fired[i] = 0
         self.phi[i] = 0.0
         self.last_attack[i] = 0
         self.last_offset[i] = 0
@@ -213,7 +236,11 @@ class TimedVersusVecEnv(VersusVecEnv):
         timed_out = self.batch.timed_out()
         now = self.batch.now()
         stats = self.batch.stats()
-        live = [i for i in everyone if not over[i]]
+        # 練習の対局は決めた手数に達したら終わり(学習側が操作待ちに戻った時点で数える)
+        drill_end = [self.is_drill[i] and not over[i]
+                     and int(stats["moves"][i, 0]) >= self.drill.moves for i in everyone]
+        done = [bool(over[i]) or drill_end[i] for i in everyone]
+        live = [i for i in everyone if not done[i]]
         potential = dict(zip(live, self.batch.potential_chains(live,
                                                                [self.sides[i] for i in live])))
         alpha = self.anneal()
@@ -228,9 +255,20 @@ class TimedVersusVecEnv(VersusVecEnv):
             attack = int(stats["attack_total"][i, side])
             r = alpha * self.attack_coef * (attack - self.last_attack[i])
             self.last_attack[i] = attack
-            phi = 0.0 if over[i] else self.potential_coef * potential[i]
+            phi = 0.0 if done[i] else self.potential_coef * potential[i]
             r += alpha_potential * (self.gamma * phi - self.phi[i])
             self.phi[i] = phi
+            if self.is_drill[i]:
+                fired = int(stats["chains_fired"][i, 0])
+                if fired > self.last_fired[i]:
+                    r += drill_reward(int(stats["last_chain"][i, 0]), self.drill)
+                    self.last_fired[i] = fired
+                if over[i]:  # 窒息
+                    results[i] = -1
+                    r -= 1.0
+                rewards[i] = r
+                self.ep_return[i] += r
+                continue
             if styled:
                 offset = int(stats["offset_total"][i, side])
                 r += self.style.counter_coef * (offset - self.last_offset[i]) / 30
@@ -249,7 +287,7 @@ class TimedVersusVecEnv(VersusVecEnv):
 
         obs = self._observe(everyone)
         infos: list[dict[str, Any]] = [{} for _ in everyone]
-        finished = [i for i in everyone if over[i]]
+        finished = [i for i in everyone if done[i]]
         for i in finished:
             side = self.sides[i]
             infos[i] = {
@@ -269,4 +307,4 @@ class TimedVersusVecEnv(VersusVecEnv):
                 for k in obs:
                     obs[k][i] = fresh[k][row]
         self.steps += n
-        return obs, rewards, np.array(over, dtype=bool), infos
+        return obs, rewards, np.array(done, dtype=bool), infos

@@ -20,7 +20,7 @@ import numpy as np
 from .._puyo import TimedVersus, Versus
 from .agents import Agent, PPOAgent, make_agent
 from .replay import record_versus, replay_name, save_replay
-from .style import StyleConfig, finish_chain, is_counter_win
+from .style import DrillConfig, StyleConfig, finish_chain, is_counter_win
 
 
 def _actions(agent: Agent, games: list[Versus], players: list[int]) -> list[int]:
@@ -121,6 +121,36 @@ def play_timed_games(a: Agent, b: Agent, seeds: list[int], timing: dict | None =
             "counter_win": won and is_counter_win(mine, theirs, style),
         })
     return records
+
+
+def play_drills(agent: Agent, seeds: list[int], drill: DrillConfig | None = None,
+                timing: dict | None = None) -> dict:
+    """組む練習の対局(相手は何もしない)を各シードで1局ずつ打ち、``drill.moves`` 手のうちに
+    撃った最大の連鎖などを集計する。全局を同時に進め、PPO の重みはまとめて推論する。"""
+    drill = drill or DrillConfig(fraction=0.0)
+    t = time.perf_counter()
+    games = [TimedVersus(s, timing, True) for s in seeds]
+    agent.reset(seeds[0] if seeds else 0)
+    while True:
+        active = [i for i, g in enumerate(games)
+                  if not g.is_over and g.moves()[0] < drill.moves]
+        if not active:
+            break
+        todo = [i for i in active if games[i].needs_action()[0]]
+        if todo:
+            for i, a in zip(todo, _actions(agent, [games[i] for i in todo], [0] * len(todo))):
+                games[i].act(0, a)
+        for i in active:
+            games[i].advance()
+    chains = np.array([g.max_chains()[0] for g in games])
+    return {
+        "games": len(games),
+        "mean_max_chain": float(chains.mean()),
+        "rate_8": float(np.mean(chains >= 8)),
+        "rate_10": float(np.mean(chains >= 10)),
+        "death_rate": float(np.mean([g.is_over for g in games])),
+        "seconds": time.perf_counter() - t,
+    }
 
 
 def play_match(a: Agent, b: Agent, seeds: list[int], max_turns: int,
