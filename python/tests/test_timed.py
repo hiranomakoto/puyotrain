@@ -187,11 +187,12 @@ def test_transfer_from_versus_starts_as_the_same_policy(tmp_path, versus_ckpt):
 def test_tiny_timed_training_and_resume(tmp_path, versus_ckpt, capsys):
     from puyotrain.rl.train_versus import resume, train
 
-    run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "profile.every_iterations=1"),
-                tmp_path / "run")
+    run = train(timed_cfg(tmp_path, versus_ckpt, "env.n_envs=2", "profile.every_iterations=1",
+                          "env.reward=style"), tmp_path / "run")
     rows = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
     assert set(rows[-1]["metrics"]) == {"greedy", "sync_versus", "step_128"}
-    assert "mean_seconds" in rows[-1]["metrics"]["greedy"]
+    for k in ("mean_seconds", "mean_finish_chain", "big_finish_rate", "counter_win_rate"):
+        assert k in rows[-1]["metrics"]["greedy"]
     agent = PPOAgent(run / "checkpoints" / "step_0000000256.zip")
     assert agent.obs_kind == "timed"
     with pytest.raises(ValueError):
@@ -258,6 +259,55 @@ def test_pool_with_several_fixed_opponents_and_initial_past(tmp_path, versus_ckp
     # 以前の形(pool.solo)も名前 solo の固定の相手として読む
     old = load_config("configs/versus_ppo.yaml", [f"pool.solo={versus_ckpt}"])
     assert pool_fixed(old) == {"solo": str(versus_ckpt)}
+
+
+def test_style_rules():
+    from puyotrain.rl.style import StyleConfig, finish_chain, is_counter_win, win_reward
+
+    st = StyleConfig()
+    assert win_reward(2, st) == pytest.approx(0.3)
+    assert win_reward(3, st) == pytest.approx(0.3)
+    assert win_reward(10, st) == pytest.approx(1.5)
+    assert win_reward(14, st) == pytest.approx(1.5)
+    assert win_reward(6, st) == pytest.approx(0.3 + 1.2 * 3 / 7)
+    me = {"max_chain": 9, "max_chain_start": 900, "last_chain": 2, "last_chain_start": 1500}
+    them = {"max_chain": 6, "max_chain_start": 600, "last_chain": 6, "last_chain_start": 600}
+    assert finish_chain(me) == 9  # とどめの2連鎖ではなく最大の9連鎖
+    assert is_counter_win(me, them, st)
+    assert not is_counter_win(me, {**them, "max_chain": 4}, st)  # 相手の連鎖が小さい
+    assert not is_counter_win({**me, "max_chain": 6}, them, st)  # 上回っていない
+    assert not is_counter_win({**me, "max_chain_start": 500}, them, st)  # 先に撃っている
+    with pytest.raises(KeyError):
+        StyleConfig.from_dict({"nope": 1})
+
+
+def test_timed_env_style_reward():
+    from puyotrain.rl.style import StyleConfig
+    from puyotrain.rl.timed_selfplay import TimedVersusVecEnv
+
+    pool = OpponentPool({"greedy": 1}, None)
+    env = TimedVersusVecEnv(3, pool, safe_mask=True, attack_coef=0.0, potential_coef=0.05,
+                            gamma=0.99, anneal_steps=0, seed=3, reward="style",
+                            style=StyleConfig())
+    env.reset()
+    rng = np.random.default_rng(3)
+    episodes, terminal = [], []
+    for _ in range(200):
+        masks = np.stack(env.env_method("action_masks"))
+        _, rewards, dones, infos = env.step(np.array([rng.choice(np.flatnonzero(m))
+                                                      for m in masks]))
+        for d, r, info in zip(dones, rewards, infos):
+            if d:
+                episodes.append(info["episode"])
+                terminal.append(r)
+    assert episodes
+    for e, r in zip(episodes, terminal):
+        assert "finish_chain" in e and "counter_win" in e
+        if e["result"] == -1:
+            assert r < -0.9  # 負けは −1(+ 小さな整形)
+            assert e["finish_chain"] == 0
+    with pytest.raises(ValueError):
+        TimedVersusVecEnv(1, pool, True, 0, 0, 0.99, 0, reward="nope")
 
 
 def test_greedy_opponent_in_timed_pool_is_greedy():

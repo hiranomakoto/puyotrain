@@ -19,6 +19,8 @@ env:
   attack_coef: 0.01         # 補助報酬: この手の連鎖で生んだおじゃま1個あたり
   potential_coef: 0.05      # 補助報酬: 潜在連鎖の整形の係数
   anneal_steps: 10000000    # 補助報酬をこのステップ数で 0 まで直線的に減らす
+  reward: win               # win(勝ち +1 / 負け −1)/ style(大連鎖で魅せて勝つ。時間のモデルのみ)
+  style: {}                 # reward: style の設定と勝ち方の評価(python/puyotrain/rl/style.py の StyleConfig)
 
 pool:
   # 相手のカテゴリを選ぶ重み。greedy・固定の相手(fixed の名前)・past(過去の自分)。

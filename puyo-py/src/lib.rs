@@ -862,6 +862,21 @@ impl PyTimedVersus {
         )
     }
 
+    /// プレイヤー `player` の連鎖の記録(勝ち方の評価用): max_chain・max_chain_start・
+    /// last_chain・last_chain_start(最後に撃ち終えた連鎖とその開始時刻)・offset_total・attack_total。
+    fn chain_stats<'py>(&self, py: Python<'py>, player: usize) -> PyResult<Bound<'py, PyDict>> {
+        check_player(player)?;
+        let p = self.inner.player(player);
+        let d = PyDict::new(py);
+        d.set_item("max_chain", p.max_chain)?;
+        d.set_item("max_chain_start", p.max_chain_start)?;
+        d.set_item("last_chain", p.last_chain)?;
+        d.set_item("last_chain_start", p.last_chain_start)?;
+        d.set_item("offset_total", p.offset_total)?;
+        d.set_item("attack_total", p.attack_total)?;
+        Ok(d)
+    }
+
     fn moves(&self) -> (u64, u64) {
         (self.inner.player(0).moves, self.inner.player(1).moves)
     }

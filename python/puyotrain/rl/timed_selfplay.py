@@ -17,6 +17,7 @@ from .._puyo import TimedBatch
 from ..spaces import action_space, observation_space
 from .agents import Agent, GreedyAgent, PPOAgent
 from .selfplay import OpponentPool, StackedActors, VersusVecEnv
+from .style import StyleConfig, finish_chain, is_counter_win, win_reward
 
 _SEED_HIGH = 2**63
 
@@ -44,16 +45,30 @@ class _TimedCalls:
         return timer.wrap(fn, section)
 
 
+def _chain_record(stats: dict, i: int, side: int) -> dict:
+    """``TimedBatch.stats`` から、局 ``i`` のプレイヤー ``side`` の連鎖の記録を取り出す。"""
+    return {k: int(stats[k][i, side])
+            for k in ("max_chain", "max_chain_start", "last_chain", "last_chain_start")}
+
+
 class TimedVersusVecEnv(VersusVecEnv):
     """時間のモデルの自己対戦環境。
 
     1ステップは「学習側が手を決めてから、次に操作待ちになるまで」。その間に相手が操作待ちに
     なれば、相手の手をまとめて求めて時刻を進める(相手は0手のことも、数手打つこともある)。
 
-    報酬は ``VersusVecEnv`` と同じ(勝ち +1 / 負け −1、減っていく補助報酬)。補助報酬の
-    「生んだおじゃま」は、このステップの間に学習側の連鎖が生んだ分。
-    ``info["episode"]`` には ``result`` と ``opponent`` に加えて、学習側の最大連鎖 ``max_chain``
-    と対局時間 ``seconds`` を入れる。
+    報酬(``reward``):
+
+    - ``"win"``: ``VersusVecEnv`` と同じ(勝ち +1 / 負け −1、減っていく補助報酬)。補助報酬の
+      「生んだおじゃま」は、このステップの間に学習側の連鎖が生んだ分。
+    - ``"style"``: 大連鎖で魅せて勝つための報酬(``style.StyleConfig``)。勝ちの報酬を決め手の連鎖の
+      大きさで変え(小さい連鎖で決めると小さく、大連鎖で決めると大きい)、自分の連鎖で予告を
+      相殺した量(返し)にも報酬を出す。潜在連鎖の整形は ``potential_floor`` の割合までは残す。
+      負けは −1。
+
+    ``info["episode"]`` には ``result`` と ``opponent`` に加えて、学習側の最大連鎖 ``max_chain``、
+    対局時間 ``seconds``、決め手の連鎖 ``finish_chain``(勝った局だけ。負けは0)、
+    返し勝ちか ``counter_win`` を入れる。
 
     相手のうち過去の自分(``pool`` の past)は、時間のモデル用の重み(観測の種類 timed)を前提に
     重みを束ねて1回で推論する。
@@ -61,7 +76,12 @@ class TimedVersusVecEnv(VersusVecEnv):
 
     def __init__(self, n_envs: int, pool: OpponentPool, safe_mask: bool, attack_coef: float,
                  potential_coef: float, gamma: float, anneal_steps: int, seed: int = 0,
-                 start_step: int = 0, timing: Optional[dict] = None):
+                 start_step: int = 0, timing: Optional[dict] = None, reward: str = "win",
+                 style: Optional[StyleConfig] = None):
+        if reward not in ("win", "style"):
+            raise ValueError(f"reward must be win or style: {reward}")
+        self.reward = reward
+        self.style = style or StyleConfig()
         self.render_mode = None  # VecEnv.__init__ が読む
         VecEnv.__init__(self, n_envs, observation_space(timed=True), action_space())
         self.batch = _TimedCalls(self, TimedBatch(n_envs, timing))
@@ -77,6 +97,7 @@ class TimedVersusVecEnv(VersusVecEnv):
         self.opponents: list[tuple[str, Agent]] = [("", None)] * n_envs  # type: ignore[list-item]
         self.phi = [0.0] * n_envs
         self.last_attack = [0] * n_envs
+        self.last_offset = [0] * n_envs
         self.ep_return = [0.0] * n_envs
         self.ep_start = [0.0] * n_envs
         self.masks: list = [None] * n_envs
@@ -95,6 +116,7 @@ class TimedVersusVecEnv(VersusVecEnv):
         self.opponents[i][1].reset(seed % 2**32)
         self.phi[i] = 0.0
         self.last_attack[i] = 0
+        self.last_offset[i] = 0
         self.ep_return[i] = 0.0
         self.ep_start[i] = time.time()
 
@@ -195,19 +217,33 @@ class TimedVersusVecEnv(VersusVecEnv):
         potential = dict(zip(live, self.batch.potential_chains(live,
                                                                [self.sides[i] for i in live])))
         alpha = self.anneal()
+        styled = self.reward == "style"
+        alpha_potential = max(alpha, self.style.potential_floor) if styled else alpha
         rewards = np.zeros(n, dtype=np.float32)
         results = [0] * n
+        finish = [0] * n
+        counter = [False] * n
         for i in everyone:
             side = self.sides[i]
             attack = int(stats["attack_total"][i, side])
             r = alpha * self.attack_coef * (attack - self.last_attack[i])
             self.last_attack[i] = attack
             phi = 0.0 if over[i] else self.potential_coef * potential[i]
-            r += alpha * (self.gamma * phi - self.phi[i])
+            r += alpha_potential * (self.gamma * phi - self.phi[i])
             self.phi[i] = phi
+            if styled:
+                offset = int(stats["offset_total"][i, side])
+                r += self.style.counter_coef * (offset - self.last_offset[i]) / 30
+                self.last_offset[i] = offset
             if over[i] and winners[i] in (0, 1):
                 results[i] = 1 if winners[i] == side else -1
-                r += results[i]
+                if results[i] == 1:
+                    me, opp = _chain_record(stats, i, side), _chain_record(stats, i, 1 - side)
+                    finish[i] = finish_chain(me)
+                    counter[i] = is_counter_win(me, opp, self.style)
+                    r += win_reward(finish[i], self.style) if styled else 1.0
+                else:
+                    r -= 1.0
             rewards[i] = r
             self.ep_return[i] += r
 
@@ -223,7 +259,8 @@ class TimedVersusVecEnv(VersusVecEnv):
                             "t": round(time.time() - self.ep_start[i], 6),
                             "result": results[i], "opponent": self.opponents[i][0],
                             "max_chain": int(stats["max_chain"][i, side]),
-                            "seconds": float(now[i]) / 60},
+                            "seconds": float(now[i]) / 60,
+                            "finish_chain": finish[i], "counter_win": counter[i]},
             }
             self._new_game(i)
         if finished:

@@ -189,6 +189,15 @@ pub struct TimedPlayer {
     pub max_chain: u32,
     /// この対局で連鎖が生んだおじゃまの合計(相殺に使った分も含む)。
     pub attack_total: u64,
+    /// この対局で、自分の連鎖が予告おじゃま(確定 + 未確定)を相殺した数の合計。
+    pub offset_total: u64,
+    /// 今の(または最後の)連鎖の開始時刻(1連鎖目を始めた時刻)。
+    pub chain_start: u64,
+    /// 最後に撃ち終えた連鎖の連鎖数と、その開始時刻(まだ無ければ 0)。
+    pub last_chain: u32,
+    pub last_chain_start: u64,
+    /// 最大連鎖(`max_chain`)を撃ち始めた時刻。
+    pub max_chain_start: u64,
     /// 直前の連鎖1つの開始時刻・消える前の盤面・消えたセル(描画用)。
     pub link_start: u64,
     pub link_before: Field,
@@ -207,6 +216,11 @@ impl TimedPlayer {
             moves: 0,
             max_chain: 0,
             attack_total: 0,
+            offset_total: 0,
+            chain_start: 0,
+            last_chain: 0,
+            last_chain_start: 0,
+            max_chain_start: 0,
             link_start: 0,
             link_before: Field::new(),
             link_cleared: 0,
@@ -399,7 +413,7 @@ impl TimedVersus {
             }
             Phase::Chaining { chain, .. } => {
                 if !self.start_link(i, chain + 1) {
-                    self.end_chain(i);
+                    self.end_chain(i, chain);
                 }
             }
             Phase::OjamaFalling { .. } => self.settle(i),
@@ -431,9 +445,17 @@ impl TimedVersus {
         let mut attack = attack_ojama(score, &mut p.state.carry, bonus);
         p.attack_total += attack as u64;
         // 自分の予告を相殺(確定分 → 未確定分)し、残りを相手の未確定の予告へ
+        let generated = attack;
         attack = offset(attack, &mut p.state.pending);
         attack = offset(attack, &mut p.unconfirmed);
-        p.max_chain = p.max_chain.max(chain);
+        p.offset_total += (generated - attack) as u64;
+        if chain == 1 {
+            p.chain_start = now;
+        }
+        if chain > p.max_chain {
+            p.max_chain = chain;
+            p.max_chain_start = p.chain_start;
+        }
         p.phase = Phase::Chaining {
             until: now + frames as u64,
             chain,
@@ -442,12 +464,14 @@ impl TimedVersus {
         true
     }
 
-    /// 連鎖が終わった。相手に送った分を確定させ、全消しを判定して操作待ちに戻る。
-    fn end_chain(&mut self, i: usize) {
+    /// `chain` 連鎖で連鎖が終わった。相手に送った分を確定させ、全消しを判定して操作待ちに戻る。
+    fn end_chain(&mut self, i: usize, chain: u32) {
         let opp = &mut self.players[1 - i];
         opp.state.pending += opp.unconfirmed;
         opp.unconfirmed = 0;
         let p = &mut self.players[i];
+        p.last_chain = chain;
+        p.last_chain_start = p.chain_start;
         if p.bonus_used {
             p.state.all_clear = false;
         }
@@ -769,6 +793,31 @@ mod tests {
         assert_eq!(t.free_fall_rows(15, 3), 2.0);
         assert_eq!(t.free_fall_rows(17, 3), 2.5);
         assert_eq!(t.free_fall_rows(100, 3), 3.0);
+    }
+
+    #[test]
+    fn records_last_chain_and_offsets() {
+        let mut g = TimedVersus::new(5);
+        let c = g.pair(0, 0).axis.to_char();
+        let row = format!("{c}.....");
+        g.player_mut(0).state.field = Field::from_rows(&[&row, &row, &row]).unwrap();
+        g.player_mut(0).state.carry = 69; // 1連鎖で1個以上
+        g.player_mut(0).state.pending = 6;
+        g.act(0, up(0)).unwrap();
+        g.act(1, up(5)).unwrap();
+        // P0 の連鎖が終わるまで進める
+        while g.player(0).last_chain == 0 {
+            if g.needs_action()[1] {
+                g.act(1, up(5)).unwrap();
+            }
+            g.advance();
+        }
+        let p = g.player(0);
+        assert_eq!(p.last_chain, 1);
+        assert_eq!(p.last_chain_start, 48); // 高さ3の列に置いて 48F で着地・発火
+        assert_eq!(p.max_chain_start, 48);
+        assert!(p.offset_total >= 1);
+        assert_eq!(p.offset_total + p.state.pending as u64, 6);
     }
 
     #[test]

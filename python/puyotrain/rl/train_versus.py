@@ -33,6 +33,7 @@ from .match import play_match
 from .render import render_replay
 from .replay import record_timed, record_versus, save_replay
 from .selfplay import OpponentPool, VersusVecEnv
+from .style import StyleConfig
 from .train import (
     _learn,
     _stop_on_sigterm,
@@ -125,6 +126,11 @@ def build_pool(cfg: dict, device: str, snapshots: list[str] | None = None) -> Op
     return pool
 
 
+def style_config(cfg: dict) -> StyleConfig:
+    """勝ち方の評価・報酬の設定(``env.style``)。"""
+    return StyleConfig.from_dict(cfg["env"].get("style"))
+
+
 def is_timed(cfg: dict) -> bool:
     """時間のモデル(``rules: timed``)で学習・評価するか。"""
     return cfg.get("rules", "sync") == "timed"
@@ -140,6 +146,7 @@ def build_env(cfg: dict, pool: OpponentPool, seed: int, start_step: int = 0) -> 
             attack_coef=float(e["attack_coef"]), potential_coef=float(e["potential_coef"]),
             gamma=float(cfg["ppo"]["gamma"]), anneal_steps=int(e["anneal_steps"]), seed=seed,
             start_step=start_step, timing=cfg.get("timing") or None,
+            reward=e.get("reward", "win"), style=style_config(cfg),
         )
     return VersusVecEnv(
         n_envs=int(e["n_envs"]), pool=pool, max_turns=int(e["max_turns"]),
@@ -208,6 +215,7 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
     chash = config_hash(cfg)
     opponents = {opponent_label(s): eval_opponent(s, cfg, device) for s in cfg["eval"]["opponents"]}
     timed = is_timed(cfg)  # 時間のモデルでは評価・動画も時間のモデルで打つ
+    style = style_config(cfg)
 
     class Checkpointer(BaseCallback):
         """一定ステップごとに保存・評価・動画。過去の自分をプールに加える。勝率を TensorBoard に出す。"""
@@ -234,6 +242,15 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                                        float(np.mean([e["max_chain"] for e in buf])))
                     self.logger.record("rollout/seconds_mean",
                                        float(np.mean([e["seconds"] for e in buf])))
+                    wins = [e for e in buf if e["result"] == 1 and "finish_chain" in e]
+                    if wins:
+                        self.logger.record("rollout/finish_chain_mean",
+                                           float(np.mean([e["finish_chain"] for e in wins])))
+                        self.logger.record("rollout/big_finish_rate", float(np.mean(
+                            [e["finish_chain"] >= style.big_chain for e in wins])))
+                    if "counter_win" in buf[0]:
+                        self.logger.record("rollout/counter_win_rate",
+                                           float(np.mean([e["counter_win"] for e in buf])))
             self.logger.record("train/aux_scale", env.anneal())
             self.logger.record("train/pool_past", len(pool.members["past"]))
 
@@ -293,12 +310,15 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
             metrics = {}
             for label, opp in opponents.items():
                 r = play_match(me, opp, seeds, int(cfg["eval"]["max_turns"]), timed=timed,
-                               timing=cfg.get("timing") or None)
+                               timing=cfg.get("timing") or None, style=style)
                 r.pop("per_game")
                 metrics[label] = r
                 self.logger.record(f"eval/win_rate_vs_{label}", r["win_rate"])
                 self.logger.record(f"eval/turns_vs_{label}", r["mean_turns"])
                 self.logger.record(f"eval/max_chain_vs_{label}", r["mean_max_chain"][0])
+                for k in ("mean_finish_chain", "big_finish_rate", "counter_win_rate"):
+                    if k in r:
+                        self.logger.record(f"eval/{k}_vs_{label}", r[k])
             self.logger.dump(step)
 
             video_every = max(1, int(cfg["video"].get("every_checkpoints", 1)))
@@ -328,7 +348,11 @@ def build_callbacks(cfg: dict, run_dir: Path, pool: OpponentPool, env: VersusVec
                 slim = {k: record[k] for k in ("step", "elapsed_sec", "metrics", "aux_scale")}
                 f.write(json.dumps(slim, ensure_ascii=False) + "\n")
             if self.verbose >= 0:
-                rates = "  ".join(f"vs_{k}={m['win_rate']:.2f}" for k, m in metrics.items())
+                rates = "  ".join(
+                    f"vs_{k}={m['win_rate']:.2f}"
+                    + (f"(finish {m['mean_finish_chain']:.1f}, big {m['big_finish_rate']:.2f}, "
+                       f"counter {m['counter_win_rate']:.2f})" if "mean_finish_chain" in m else "")
+                    for k, m in metrics.items())
                 print(f"[checkpoint] {name}: {rates}  aux={env.anneal():.2f}", flush=True)
 
     return Checkpointer()

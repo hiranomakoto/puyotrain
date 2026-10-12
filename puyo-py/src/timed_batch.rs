@@ -278,7 +278,8 @@ impl PyTimedBatch {
         PyArray1::from_vec(py, self.games.iter().map(TimedVersus::now).collect())
     }
 
-    /// 各プレイヤーの統計 (対局数, 2): 置いた手数・最大連鎖・生んだおじゃまの合計・得点。
+    /// 各プレイヤーの統計 (対局数, 2): 置いた手数・最大連鎖・生んだおじゃまの合計・得点・
+    /// 相殺したおじゃまの合計・最後に撃ち終えた連鎖とその開始時刻・最大連鎖の開始時刻。
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let n = self.games.len();
         let col = |f: &dyn Fn(&puyo_core::timed::TimedPlayer) -> u64| -> Vec<u64> {
@@ -303,6 +304,22 @@ impl PyTimedBatch {
         d.set_item(
             "score",
             PyArray1::from_vec(py, col(&|p| p.state.score)).reshape([n, 2])?,
+        )?;
+        d.set_item(
+            "offset_total",
+            PyArray1::from_vec(py, col(&|p| p.offset_total)).reshape([n, 2])?,
+        )?;
+        d.set_item(
+            "last_chain",
+            PyArray1::from_vec(py, col(&|p| p.last_chain as u64)).reshape([n, 2])?,
+        )?;
+        d.set_item(
+            "last_chain_start",
+            PyArray1::from_vec(py, col(&|p| p.last_chain_start)).reshape([n, 2])?,
+        )?;
+        d.set_item(
+            "max_chain_start",
+            PyArray1::from_vec(py, col(&|p| p.max_chain_start)).reshape([n, 2])?,
         )?;
         Ok(d)
     }

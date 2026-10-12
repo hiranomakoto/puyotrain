@@ -20,6 +20,7 @@ import numpy as np
 from .._puyo import TimedVersus, Versus
 from .agents import Agent, PPOAgent, make_agent
 from .replay import record_versus, replay_name, save_replay
+from .style import StyleConfig, finish_chain, is_counter_win
 
 
 def _actions(agent: Agent, games: list[Versus], players: list[int]) -> list[int]:
@@ -70,10 +71,12 @@ def play_games(a: Agent, b: Agent, seeds: list[int], max_turns: int) -> list[dic
     return records
 
 
-def play_timed_games(a: Agent, b: Agent, seeds: list[int],
-                     timing: dict | None = None) -> list[dict]:
+def play_timed_games(a: Agent, b: Agent, seeds: list[int], timing: dict | None = None,
+                     style: StyleConfig | None = None) -> list[dict]:
     """``play_games`` の時間のモデル版(``TimedVersus``)。全局を同時に進め、各エージェントは
-    自分の席が操作待ちの局の分だけまとめて手を決める。打ち切りは ``timing["max_frames"]``。"""
+    自分の席が操作待ちの局の分だけまとめて手を決める。打ち切りは ``timing["max_frames"]``。
+    記録には勝ち方(A が勝った局の決め手の連鎖 ``finish_chain``、返し勝ち ``counter_win``)も入る。"""
+    style = style or StyleConfig()
     specs = [(s, swapped) for s in seeds for swapped in (False, True)]
     games = [TimedVersus(s, timing) for s, _ in specs]
     a_side = [1 if swapped else 0 for _, swapped in specs]
@@ -104,6 +107,8 @@ def play_timed_games(a: Agent, b: Agent, seeds: list[int],
         else:
             outcome = "win" if g.winner == me else "loss"
         scores, chains, moves = g.scores(), g.max_chains(), g.moves()
+        mine, theirs = g.chain_stats(me), g.chain_stats(1 - me)
+        won = outcome == "win"
         records.append({
             "seed": seed,
             "swapped": swapped,
@@ -112,22 +117,27 @@ def play_timed_games(a: Agent, b: Agent, seeds: list[int],
             "frames": g.now,
             "max_chain": [chains[me], chains[1 - me]],
             "score": [scores[me], scores[1 - me]],
+            "finish_chain": finish_chain(mine) if won else 0,
+            "counter_win": won and is_counter_win(mine, theirs, style),
         })
     return records
 
 
 def play_match(a: Agent, b: Agent, seeds: list[int], max_turns: int,
                replay_dir: Path | None = None, n_replays: int = 0,
-               timed: bool = False, timing: dict | None = None) -> dict:
+               timed: bool = False, timing: dict | None = None,
+               style: StyleConfig | None = None) -> dict:
     """A 対 B を各シード左右入れ替えて打ち、A 視点の集計を返す。
     ``replay_dir`` を指定すると、最初の ``n_replays`` シード分の対局をリプレイとして保存する。
     ``timed`` なら時間のモデル(``TimedVersus``)で打つ(``max_turns`` は使わず、打ち切りは
-    ``timing["max_frames"]``。リプレイは未対応)。"""
+    ``timing["max_frames"]``。リプレイは未対応)。時間のモデルでは勝ち方の集計
+    (``mean_finish_chain``: A が勝った局の決め手の連鎖の平均、``big_finish_rate``: A の勝ちのうち
+    大連鎖で決めた割合、``counter_win_rate``: 返し勝ちの割合(全局に対して))も返す。"""
     t = time.perf_counter()
     if timed:
         if replay_dir is not None:
             raise ValueError("replays are not supported for timed games yet")
-        games = play_timed_games(a, b, seeds, timing)
+        games = play_timed_games(a, b, seeds, timing, style)
     else:
         games = play_games(a, b, seeds, max_turns)
     if replay_dir is not None:
@@ -139,7 +149,17 @@ def play_match(a: Agent, b: Agent, seeds: list[int], max_turns: int,
     n = len(games)
     decided = sum(o in ("win", "loss") for o in outcomes)
     wins = outcomes.count("win")
-    extra = {"mean_seconds": float(np.mean([g["frames"] for g in games])) / 60} if timed else {}
+    extra = {}
+    if timed:
+        style = style or StyleConfig()
+        finishes = [g["finish_chain"] for g in games if g["outcome"] == "win"]
+        extra = {
+            "mean_seconds": float(np.mean([g["frames"] for g in games])) / 60,
+            "mean_finish_chain": float(np.mean(finishes)) if finishes else 0.0,
+            "big_finish_rate": (float(np.mean([f >= style.big_chain for f in finishes]))
+                                if finishes else 0.0),
+            "counter_win_rate": float(np.mean([g["counter_win"] for g in games])),
+        }
     return {
         **extra,
         "games": n,
@@ -176,7 +196,9 @@ def main(argv=None) -> None:
     r = play_match(a, b, list(range(args.seeds)), args.max_turns,
                    replay_dir if args.replays else None, args.replays, timed=args.timed)
     rate = r["win_rate_decided"]
-    length = f"time={r['mean_seconds']:.1f}s" if args.timed else ""
+    length = (f"time={r['mean_seconds']:.1f}s finish={r['mean_finish_chain']:.2f} "
+              f"big={r['big_finish_rate']:.2f} counter={r['counter_win_rate']:.2f}"
+              if args.timed else "")
     print(f"{args.agent_a} vs {args.agent_b}: {r['wins']}W {r['losses']}L "
           f"{r['draws']}D {r['timeouts']}T / {r['games']} games  "
           f"win_rate={r['win_rate']:.3f} (decided {rate if rate is None else round(rate, 3)})  "

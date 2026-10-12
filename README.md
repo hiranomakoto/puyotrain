@@ -479,6 +479,11 @@ python scripts/train_versus.py --config configs/versus_timed_ppo.yaml --run-dir 
 - 学習環境 `TimedVersusVecEnv` は、学習側が操作待ちになるまで全局を進める(途中の相手の手もまとめて求める)。
   時刻の進行・観測・greedy の手は `TimedBatch`(Rust)で全局分を並列に計算する。
 - 同期ターン制の対戦の重みから引き継ぎ、増えた入力は影響ゼロで始める(価値ヘッドも引き継ぐ)。
+- 報酬 `env.reward: style`(時間のモデルのみ。`python/puyotrain/rl/style.py`): 大連鎖で魅せて勝つための報酬。
+  勝ちの報酬を決め手の連鎖(勝った局で撃った最大の連鎖)の大きさで変え(既定は3連鎖以下 +0.3 〜 10連鎖以上 +1.5)、
+  自分の連鎖で予告を相殺した量(返し)にも報酬を出す。評価には決め手の連鎖の平均(`mean_finish_chain`)、
+  8連鎖以上で決めた勝ちの割合(`big_finish_rate`)、返し勝ちの割合(`counter_win_rate`)も出す。
+  設定例は `configs/versus_timed_style.yaml`。
 - 評価も時間のモデルで打つ。動画はチェックポイントごとに greedy との対局を左右入れ替えて録画する
   (`video.every_checkpoints` 回に1回)。
 

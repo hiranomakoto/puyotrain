@@ -1,0 +1,57 @@
+# 時間のモデルで「大連鎖で魅せて勝つ」AI を目指す学習(versus_timed_b の500万ステップから分岐)。
+# 使い方: python scripts/train_versus.py --config configs/versus_timed_style.yaml --run-dir runs/versus_timed_style
+#
+# 報酬(env.reward: style、python/puyotrain/rl/style.py):
+# - 勝ち: 決め手の連鎖(勝った局で撃った最大の連鎖)が3連鎖以下なら +0.3、10連鎖以上なら +1.5、
+#   その間は直線。負けは −1
+# - 返し: 自分の連鎖で予告おじゃまを相殺した量 30個あたり +0.1
+# - 潜在連鎖の整形は減らさずに小さく残す(0.05 × 0.2 = 1連鎖あたり 0.01)
+# - 送ったおじゃまの補助報酬は使わない(潰しを後押しするため)
+# 評価には、決め手の連鎖の平均・大連鎖(8連鎖以上)で決めた勝ちの割合・返し勝ちの割合も出す。
+
+mode: versus
+rules: timed
+run_name: versus_timed_style
+init_from: runs/versus_timed_b/checkpoints/step_0005000064.zip
+
+env:
+  n_envs: 128
+  reward: style
+  attack_coef: 0.0
+  potential_coef: 0.05
+  anneal_steps: 0           # 減らさない(potential_floor の割合で残す)
+  style:
+    big_chain: 8
+    counter_min_chain: 5
+    win_low_chain: 3
+    win_high_chain: 10
+    win_min: 0.3
+    win_max: 1.5
+    counter_coef: 0.1
+    potential_floor: 0.2
+
+ppo:
+  total_timesteps: 20000000
+  batch_size: 1024
+
+pool:
+  weights: {greedy: 1, sync_versus: 1, solo_play: 1, peer: 0, past: 2}
+  solo: null
+  fixed:
+    sync_versus: runs/versus_main/checkpoints/step_0016470016.zip
+    solo_play: runs/solo_afterstate_b/checkpoints/step_0019000000.zip
+    peer: runs/versus_timed_b/checkpoints/step_0005000064.zip   # 評価専用(重み0)。拮抗した相手
+  initial_past:
+    - runs/versus_timed_b/checkpoints/step_0002000000.zip
+    - runs/versus_timed_b/checkpoints/step_0004000000.zip
+  snapshot_every: 2000000
+  max_snapshots: 10
+
+eval:
+  seeds: {start: 0, count: 50}
+  opponents: [greedy, sync_versus, solo_play, peer]
+
+video:
+  enabled: true
+  every_checkpoints: 4
+  timed_speed: 1.0
