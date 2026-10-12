@@ -11,13 +11,17 @@
 |---|---|---|
 | 1人プレイの完成版 | `runs/solo_afterstate_b/checkpoints/step_0019000000.zip` | 平均最大連鎖 9.16、対戦では greedy に勝率35% |
 | 同期ターン制での対戦の完成版 | `runs/versus_main/checkpoints/step_0016470016.zip` | greedy に82.6%、1人プレイの完成版にほぼ全勝(各500局) |
+| 時間のモデル、勝ち方の報酬(分岐元) | `runs/versus_timed_style/checkpoints/step_0011000064.zip` | peer に60.5%(返し勝ち33%)、練習の対局32手で最大連鎖 6.1 |
+| 時間のモデル、先読みの特徴量(学習中) | `runs/versus_timed_look/checkpoints/step_0005000064.zip` | peer に87.5%(決め手 7.9、返し勝ち60%)、練習の対局32手で 7.78(各400局) |
 
 使える道具:
 
-- 対戦シミュレーター(`puyo-core/src/versus.rs`、同期ターン制)
+- 対戦シミュレーター(`puyo-core/src/versus.rs`、同期ターン制)と、時間のモデル(`puyo-core/src/timed.rs`、
+  学習用にまとめて進める `TimedBatch`)
+- 先読みの特徴量(`puyo-core/src/lookahead.rs`、観測の種類 `look`)と先読み探索の試作(`puyo-core/src/builder.rs`)
 - 対戦用の特徴量(`versus_action_features`、`versus_info`)と方策(`PuyoVersusFeatures`)
 - 自己対戦の学習(`scripts/train_versus.py`、`configs/versus_ppo.yaml`)
-- 勝率の測定(`scripts/match.py`)、総当たりの Elo(`scripts/league.py`)
+- 勝率の測定(`scripts/match.py`。時間のモデルでは勝ち方の指標と練習の対局も)、総当たりの Elo(`scripts/league.py`)
 - 学習ループのプロファイリング(`profile.enabled`)
 
 ## 決定事項
@@ -68,11 +72,18 @@
    greedy に63%(同期ターン制では35%)、同期ターン制の対戦の完成版は68%(同82.6%)。
 2. 時間の情報を観測と特徴量に加える(完了。手ごと22個、対局全体17個)。
 3. 学習用の環境(完了。`TimedBatch` で複数局をまとめて並列に進める)。
-4. 学習: `versus_timed`(500万ステップ)で目標を達成した(greedy に97%、同期ターン制の対戦の完成版に86〜98%、
-   最大連鎖の平均 約5.5〜6.7)。弱点の大連鎖型の相手への対策として、その相手を学習の相手に加えた
-   `versus_timed_b`(`configs/versus_timed_b.yaml`)に分岐する(次に行う)。
+4. 学習: `versus_timed`(500万ステップ)で最初の目標を達成した(greedy に97%、同期ターン制の対戦の完成版に86〜98%)。
+   大連鎖型の相手を学習の相手に加えた `versus_timed_b` を経て、目標の変更に合わせて勝ち方の報酬の
+   `versus_timed_style` に移った。
+5. 「魅せて勝つ」ための学習:
+   - `versus_timed_style`: 勝ち方の報酬で返し勝ちは増えたが、決め手の連鎖は約7で止まった。
+   - `versus_timed_style2`(報酬の差を広げる)、`versus_timed_drill`(組む練習の対局を混ぜる)は効かなかった。
+     原因は大連鎖を「組めない」こと(練習の対局でも32手で最大連鎖 約6)。
+   - 3手先まで全部試す先読み探索は、同じ条件で AI よりずっと大きな種を育てた。
+   - `versus_timed_look`(進行中): 先読みの結果を手ごとの特徴量(3個)として見せる。500万ステップで、組む力
+     (練習の対局32手 6.1 → 7.8、10連鎖以上 1% → 20%)と勝ち方の指標(peer への返し勝ち 33% → 60%)がそろって伸びた。
 
-目標: greedy と同期ターン制の対戦の完成版の両方に勝率8割以上、かつ対戦中の最大連鎖の平均が約4より伸びること。
+詳細は [versus_log.md](versus_log.md)。
 
 ### 段階4以降(候補)
 
@@ -81,7 +92,17 @@
 
 ## 進め方
 
-1. `versus_timed_look`(`configs/versus_timed_look.yaml`)の学習: 先読み(3手先まで)の特徴量を見せて、短い手数で
-   大連鎖を組めるようにする → 練習の対局での最大連鎖(`eval/drill_*`)と、対戦での勝ち方の指標・勝率で評価する。
-2. 時間のモデルでの総当たりの Elo(`scripts/league.py` は今は同期ターン制のみ)、相手の推論の回数を減らす高速化。
-2. 結果と方針の変更は [versus_log.md](versus_log.md) に追記する。
+1. `versus_timed_look`(`configs/versus_timed_look.yaml`)は、2000万ステップまでこのまま回す
+   (500万ステップ時点で約520 steps/s、残り約8時間)。500万ステップの自分が200万ステップの自分に55%で勝ち越しており、
+   まだ伸びている。
+   - 主に見る指標: 連鎖を組む相手(peer、solo_play、origin)への勝率・決め手の連鎖・8連鎖以上で決めた割合・返し勝ちの割合と、
+     練習の対局の最大連鎖(`eval/drill_*`)。100局の評価は揺れが大きいので、節目では400局で測り直す。
+   - greedy や sync_versus のような潰しに来る相手には、6〜7連鎖で返すのが合理的。こちらは勝率が保てていればよい。
+   - 動画(`runs/versus_timed_look/videos/`)で、peer や solo_play への返しの場面を確認する。
+2. 次の課題は10連鎖以上を撃ち切ること。練習の対局では10連鎖以上が約2割だが、先読みで見ると種が10連鎖以上に育つ局面は
+   約4割あり、育った種を撃ち切るところに伸びしろがある。
+3. 学習と並行してできる改善(候補。手を付けるときは相談する):
+   - 先読みの観測の高速化(1局面 約9ms がボトルネック)
+   - 評価をまとめて並列に進める(`TimedBatch` を使う。今は先読みのモデルの評価が1局ずつで遅い)
+   - 時間のモデルでの総当たりの Elo(`scripts/league.py` は今は同期ターン制のみ)
+4. 結果と方針の変更は [versus_log.md](versus_log.md) に追記する。
