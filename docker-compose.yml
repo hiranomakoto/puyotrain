@@ -39,7 +39,7 @@ services:
     volumes:
       - .:/work
     ports:
-      - "6006:6006"
+      - "127.0.0.1:6006:6006"   # この PC からだけ見られるようにする(TensorBoard には認証がない)
 
 volumes:
   puyo-cache:

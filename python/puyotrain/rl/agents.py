@@ -195,7 +195,8 @@ class PPOAgent(Agent):
         actions, _ = self.model.predict(obs, action_masks=masks, deterministic=False)
         return [int(a) for a in actions]
 
-    def _argmax_actions(self, obs: dict, masks: np.ndarray) -> list[int]:
+    def _masked_logits(self, obs: dict, masks: np.ndarray):
+        """合法でない手を -inf にした方策の logits(局面数, 22)。"""
         import torch as th
 
         policy = self.model.policy
@@ -205,8 +206,10 @@ class PPOAgent(Agent):
             if isinstance(features, tuple):  # 方策と価値で特徴抽出を共有していない場合
                 features = features[0]
             logits = policy.action_net(policy.mlp_extractor.forward_actor(features))
-            logits = logits.masked_fill(~th.as_tensor(masks, device=policy.device), -th.inf)
-            return logits.argmax(dim=1).tolist()
+            return logits.masked_fill(~th.as_tensor(masks, device=policy.device), -th.inf)
+
+    def _argmax_actions(self, obs: dict, masks: np.ndarray) -> list[int]:
+        return self._masked_logits(obs, masks).argmax(dim=1).tolist()
 
     def describe(self) -> dict:
         return {"type": self.kind, "checkpoint": str(self.path), "step": self.step}

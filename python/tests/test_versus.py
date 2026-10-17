@@ -147,7 +147,9 @@ def test_play_games_batched_matches_sequential_for_deterministic_agents(solo_ckp
 
 
 def test_fast_act_batch_matches_predict(tmp_path, solo_ckpt):
-    """act_batch の高速な道(直接 argmax)は、SB3 の predict(決定的)と同じ手を返す。"""
+    """act_batch の高速な道(直接 argmax)は、SB3 の predict(決定的)と同じ手を返す。
+    計算の順序の違いで、ほぼ同点の手どうしは入れ替わりうる(PyTorch の版や CPU による)ので、
+    違う手のときは logits が同点であることを確かめる。"""
     from puyotrain.rl.train_versus import build_env, build_model, build_pool, transfer_solo_weights
 
     cfg = versus_cfg(tmp_path, solo_ckpt)
@@ -162,7 +164,11 @@ def test_fast_act_batch_matches_predict(tmp_path, solo_ckpt):
             stacked = {k: np.stack([o[k] for o in obs]) for k in obs[0]}
             expected, _ = agent.model.predict(stacked, action_masks=stacked["action_mask"]
                                               .astype(bool), deterministic=True)
-            assert agent.act_batch(obs) == [int(a) for a in expected]
+            got = agent.act_batch(obs)
+            logits = agent._masked_logits(stacked, stacked["action_mask"].astype(bool)).numpy()
+            for row, g, e in zip(logits, got, expected):
+                assert np.isfinite(row[g])
+                assert row[g] == pytest.approx(row[int(e)], abs=1e-4)
             if v.is_over:
                 break
             v.step(*[int(rng.choice(np.flatnonzero(v.action_mask(p)))) for p in (0, 1)])
